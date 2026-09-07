@@ -2231,10 +2231,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
     super.textStyle = value;
-    _paragraphCache.clear();
-    _inlineUnderlineParagraphCache.clear();
-    _runParagraphCache.clear();
-    _foregroundPictureCache.clear();
+    _clearCaches();
   }
 
   @override
@@ -2243,10 +2240,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
     super.textScaler = value;
-    _paragraphCache.clear();
-    _inlineUnderlineParagraphCache.clear();
-    _runParagraphCache.clear();
-    _foregroundPictureCache.clear();
+    _clearCaches();
   }
 
   @override
@@ -2256,6 +2250,16 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     super.theme = value;
     _palette = _buildMonkeyTerminalPalette(value);
+    _clearCaches();
+  }
+
+  @override
+  void clearFontCache() {
+    super.clearFontCache();
+    _clearCaches();
+  }
+
+  void _clearCaches() {
     _paragraphCache.clear();
     _inlineUnderlineParagraphCache.clear();
     _runParagraphCache.clear();
@@ -2263,12 +2267,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
   }
 
   @override
-  void clearFontCache() {
-    super.clearFontCache();
-    _paragraphCache.clear();
-    _inlineUnderlineParagraphCache.clear();
-    _runParagraphCache.clear();
-    _foregroundPictureCache.clear();
+  void dispose() {
+    _clearCaches();
+    super.dispose();
   }
 
   void paintReadableCursor(
@@ -3426,6 +3427,7 @@ class MonkeyRenderTerminal extends RenderBox
   void dispose() {
     _cancelPendingTerminalResize();
     _selectionListeners.clear();
+    _painter.dispose();
     super.dispose();
   }
 
@@ -5276,6 +5278,7 @@ class MonkeyRenderTerminal extends RenderBox
     paragraph.layout(ParagraphConstraints(width: size.width));
 
     canvas.drawParagraph(paragraph, Offset(0, offset.dy));
+    paragraph.dispose();
   }
 
   void _paintSelection(

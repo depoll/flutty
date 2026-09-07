@@ -12231,7 +12231,7 @@ void main() {
     );
 
     testWidgets(
-      'background path verification closes late SFTP clients after open timeout',
+      'background path verification preserves replacement after open timeout',
       (tester) async {
         const relativePath = 'lib/presentation/screens/terminal_screen.dart';
         const workingDirectory = '/Users/tester/project';
@@ -12260,10 +12260,22 @@ void main() {
         await tester.pump(const Duration(seconds: 5, milliseconds: 1));
         verifyNever(sftp.close);
 
+        // The real terminal timeout handler must release the pending open
+        // immediately, so another consumer can recover before it finishes.
+        final replacement = _MockSftpClient();
+        when(() => sshClient.sftp()).thenAnswer((_) async => replacement);
+        final next = session.sftp();
+        await tester.pump();
+        verify(() => sshClient.sftp()).called(1);
+        expect(await next, same(replacement));
+
         sftpOpenCompleter.complete(sftp);
         await tester.pump();
 
         verify(sftp.close).called(1);
+        verifyNever(replacement.close);
+        expect(await session.sftp(), same(replacement));
+        verifyNever(() => sshClient.sftp());
 
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump(const Duration(seconds: 11));

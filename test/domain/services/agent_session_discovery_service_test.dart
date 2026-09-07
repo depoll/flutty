@@ -2803,6 +2803,52 @@ HEAD b
       },
     );
 
+    test('invalidated discoveries cannot republish stale snapshots', () async {
+      final client = _MockSshClient();
+      final oldProbeStarted = Completer<void>();
+      final finishOldProbe = Completer<void>();
+      var probes = 0;
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('opencode session list --format json')) {
+          final probe = ++probes;
+          if (probe == 1) {
+            oldProbeStarted.complete();
+            await finishOldProbe.future;
+          }
+          return _buildExecSession(
+            stdout: jsonEncode([
+              {
+                'id': 'session-$probe',
+                'title': 'Discovery result',
+                'directory': '/project',
+                'updated': '2026-04-21T20:00:00.000Z',
+              },
+            ]),
+          );
+        }
+        return _buildExecSession();
+      });
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final oldLoad = discovery.discoverSessions(session, toolName: 'OpenCode');
+      await oldProbeStarted.future;
+      discovery.invalidateSession(session);
+      finishOldProbe.complete();
+      expect((await oldLoad).sessions.single.sessionId, 'session-1');
+
+      final refreshed = await discovery
+          .discoverSessionsStream(session, toolName: 'OpenCode')
+          .toList();
+
+      expect(probes, 2);
+      expect(refreshed.last.sessions.single.sessionId, 'session-2');
+      expect(
+        refreshed.expand((result) => result.sessions).map((s) => s.sessionId),
+        everyElement('session-2'),
+      );
+    });
+
     test(
       'reuses related worktree lookups across max-per-tool refreshes',
       () async {

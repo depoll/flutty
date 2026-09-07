@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -68,6 +70,35 @@ void main() {
         expect(crashReporter.deleteUnsentReportsCount, 0);
       },
     );
+
+    test('overlapping consent updates leave both SDKs opted out', () async {
+      final analytics = _DelayedAnalyticsClient();
+      final crashReporter = _FakeCrashReporter();
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: false,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: analytics,
+        crashReporter: crashReporter,
+      );
+
+      final enable = service.setCollectionEnabled(enabled: true);
+      await analytics.enableStarted.future;
+      final disable = service.setCollectionEnabled(enabled: false);
+      await service.logFeatureOpened(feature: 'terminal');
+      expect(service.collectionEnabled, isFalse);
+      expect(analytics.events, isEmpty);
+
+      // Let the disable call progress before the older enable finishes.
+      await Future<void>.delayed(Duration.zero);
+      analytics.finishEnable.complete();
+      await Future.wait([enable, disable]);
+
+      expect(analytics.collectionEnabled, isFalse);
+      expect(crashReporter.collectionEnabled, isFalse);
+      expect(analytics.resetCount, 1);
+      expect(crashReporter.deleteUnsentReportsCount, 1);
+    });
 
     test('swallows SDK failures while updating collection state', () async {
       final crashReporter = _FakeCrashReporter();
@@ -429,6 +460,344 @@ void main() {
     });
   });
 
+  group('TelemetryCollectionNotifier', () {
+    test('a stale initialization read cannot undo opt-out', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = _DelayedTelemetryReadSettingsService(db);
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: _FakeAnalyticsClient(),
+        crashReporter: _FakeCrashReporter(),
+      );
+      final container = ProviderContainer(
+        overrides: [
+          settingsServiceProvider.overrideWithValue(settings),
+          telemetryServiceProvider.overrideWithValue(service),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        telemetryCollectionNotifierProvider.notifier,
+      );
+      await settings.readStarted.future;
+
+      await notifier.setEnabled(enabled: false);
+      settings.finishRead.complete(true);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(service.collectionEnabled, isFalse);
+      expect(container.read(telemetryCollectionNotifierProvider), isFalse);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isFalse,
+      );
+    });
+
+    for (final initiallyEnabled in [false, true]) {
+      test(
+        'opt-out gates events during queued persistence from '
+        'enabled=$initiallyEnabled and skips the superseded enable',
+        () async {
+          final db = AppDatabase.forTesting(NativeDatabase.memory());
+          addTearDown(db.close);
+          final settings = _DelayedTelemetryWriteSettingsService(db);
+          final analytics = _FakeAnalyticsClient();
+          final crashReporter = _FakeCrashReporter();
+          final service = TelemetryService(
+            status: TelemetryServiceStatus.ready,
+            collectionEnabled: initiallyEnabled,
+            diagnosticsLogger: const NoopDiagnosticsLogger(),
+            analyticsClient: analytics,
+            crashReporter: crashReporter,
+          );
+          final container = ProviderContainer(
+            overrides: [
+              settingsServiceProvider.overrideWithValue(settings),
+              telemetryServiceProvider.overrideWithValue(service),
+            ],
+          );
+          addTearDown(container.dispose);
+          final notifier = container.read(
+            telemetryCollectionNotifierProvider.notifier,
+          );
+
+          final enable = notifier.setEnabled(enabled: true);
+          await settings.writeStarted.future;
+          final disable = notifier.setEnabled(enabled: false);
+          expect(service.collectionEnabled, isFalse);
+          await service.logFeatureOpened(feature: 'terminal');
+          await service.recordError(
+            StateError('test'),
+            StackTrace.current,
+            fatal: false,
+          );
+          expect(analytics.events, isEmpty);
+          expect(crashReporter.recordedErrors, isEmpty);
+
+          settings.finishWrite.complete();
+          await Future.wait([enable, disable]);
+
+          expect(analytics.collectionUpdates, [false]);
+          expect(crashReporter.collectionEnabled, isFalse);
+          expect(analytics.resetCount, initiallyEnabled ? 1 : 0);
+          expect(
+            crashReporter.deleteUnsentReportsCount,
+            initiallyEnabled ? 1 : 0,
+          );
+          expect(container.read(telemetryCollectionNotifierProvider), isFalse);
+          expect(
+            await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+            isFalse,
+          );
+        },
+      );
+    }
+
+    test('opt-out gates events while an older SDK enable is pending', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final analytics = _DelayedAnalyticsClient();
+      final crashReporter = _FakeCrashReporter();
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: false,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: analytics,
+        crashReporter: crashReporter,
+      );
+      final container = _createTelemetryContainer(
+        db: db,
+        telemetryService: service,
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        telemetryCollectionNotifierProvider.notifier,
+      );
+
+      final enable = notifier.setEnabled(enabled: true);
+      await analytics.enableStarted.future;
+      final disable = notifier.setEnabled(enabled: false);
+      expect(service.collectionEnabled, isFalse);
+      await service.logFeatureOpened(feature: 'terminal');
+      await service.recordError(
+        StateError('test'),
+        StackTrace.current,
+        fatal: false,
+      );
+      expect(analytics.events, isEmpty);
+      expect(crashReporter.recordedErrors, isEmpty);
+
+      analytics.finishEnable.complete();
+      await Future.wait([enable, disable]);
+      expect(analytics.collectionUpdates, [true, false]);
+      expect(crashReporter.collectionEnabled, isFalse);
+      expect(analytics.resetCount, 1);
+      expect(crashReporter.deleteUnsentReportsCount, 1);
+      expect(container.read(telemetryCollectionNotifierProvider), isFalse);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isFalse,
+      );
+    });
+
+    test(
+      'failed opt-out persistence still disables and clears SDK data',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        await SettingsService(
+          db,
+        ).setBool(SettingKeys.telemetryCollection, value: true);
+        final settings = _DelayedTelemetryWriteSettingsService(
+          db,
+          delayedValue: false,
+          failWrite: true,
+        );
+        final analytics = _FakeAnalyticsClient();
+        final crashReporter = _FakeCrashReporter();
+        final service = TelemetryService(
+          status: TelemetryServiceStatus.ready,
+          collectionEnabled: true,
+          diagnosticsLogger: const NoopDiagnosticsLogger(),
+          analyticsClient: analytics,
+          crashReporter: crashReporter,
+        );
+        final container = ProviderContainer(
+          overrides: [
+            settingsServiceProvider.overrideWithValue(settings),
+            telemetryServiceProvider.overrideWithValue(service),
+          ],
+        );
+        addTearDown(container.dispose);
+        final notifier = container.read(
+          telemetryCollectionNotifierProvider.notifier,
+        );
+
+        final failedDisable = expectLater(
+          notifier.setEnabled(enabled: false),
+          throwsStateError,
+        );
+        expect(service.collectionEnabled, isFalse);
+        await settings.writeStarted.future;
+        settings.finishWrite.complete();
+        await failedDisable;
+
+        expect(analytics.collectionUpdates, [false]);
+        expect(crashReporter.collectionEnabled, isFalse);
+        expect(analytics.resetCount, 1);
+        expect(crashReporter.deleteUnsentReportsCount, 1);
+        // The storage failure remains visible; it cannot reopen the live gate.
+        expect(
+          await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+          isTrue,
+        );
+      },
+    );
+
+    test('a newer enable does not skip queued opt-out cleanup', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = _DelayedTelemetryWriteSettingsService(
+        db,
+        delayedValue: false,
+      );
+      final analytics = _FakeAnalyticsClient();
+      final crashReporter = _FakeCrashReporter();
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.ready,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+        analyticsClient: analytics,
+        crashReporter: crashReporter,
+      );
+      final container = ProviderContainer(
+        overrides: [
+          settingsServiceProvider.overrideWithValue(settings),
+          telemetryServiceProvider.overrideWithValue(service),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        telemetryCollectionNotifierProvider.notifier,
+      );
+
+      final disable = notifier.setEnabled(enabled: false);
+      await settings.writeStarted.future;
+      final enable = notifier.setEnabled(enabled: true);
+      expect(service.collectionEnabled, isFalse);
+      settings.finishWrite.complete();
+      await Future.wait([disable, enable]);
+
+      expect(analytics.collectionUpdates, [false, true]);
+      expect(crashReporter.collectionEnabled, isTrue);
+      expect(analytics.resetCount, 1);
+      expect(crashReporter.deleteUnsentReportsCount, 1);
+      expect(container.read(telemetryCollectionNotifierProvider), isTrue);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isTrue,
+      );
+    });
+
+    test('persists overlapping choices in request order', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = _DelayedTelemetryWriteSettingsService(db);
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.disabledByBuild,
+        collectionEnabled: false,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+      );
+      final container = ProviderContainer(
+        overrides: [
+          settingsServiceProvider.overrideWithValue(settings),
+          telemetryServiceProvider.overrideWithValue(service),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        telemetryCollectionNotifierProvider.notifier,
+      );
+
+      final enable = notifier.setEnabled(enabled: true);
+      await settings.writeStarted.future;
+      final disable = notifier.setEnabled(enabled: false);
+      await Future<void>.delayed(Duration.zero);
+      settings.finishWrite.complete();
+      await Future.wait([enable, disable]);
+
+      expect(service.collectionEnabled, isFalse);
+      expect(container.read(telemetryCollectionNotifierProvider), isFalse);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isFalse,
+      );
+    });
+
+    test('a failed preference write does not block a queued opt-out', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = _DelayedTelemetryWriteSettingsService(
+        db,
+        failEnable: true,
+      );
+      final service = TelemetryService(
+        status: TelemetryServiceStatus.disabledByBuild,
+        collectionEnabled: true,
+        diagnosticsLogger: const NoopDiagnosticsLogger(),
+      );
+      final container = ProviderContainer(
+        overrides: [
+          settingsServiceProvider.overrideWithValue(settings),
+          telemetryServiceProvider.overrideWithValue(service),
+        ],
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(
+        telemetryCollectionNotifierProvider.notifier,
+      );
+      final failedEnable = expectLater(
+        notifier.setEnabled(enabled: true),
+        throwsStateError,
+      );
+      await settings.writeStarted.future;
+      final disable = notifier.setEnabled(enabled: false);
+      settings.finishWrite.complete();
+      await Future.wait([failedEnable, disable]);
+
+      expect(service.collectionEnabled, isFalse);
+      expect(container.read(telemetryCollectionNotifierProvider), isFalse);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isFalse,
+      );
+    });
+
+    test('finishes a pending preference write after disposal', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = _DelayedTelemetryWriteSettingsService(db);
+      final container = ProviderContainer(
+        overrides: [settingsServiceProvider.overrideWithValue(settings)],
+      );
+      final pending = container
+          .read(telemetryCollectionNotifierProvider.notifier)
+          .setEnabled(enabled: true);
+      await settings.writeStarted.future;
+      container.dispose();
+      settings.finishWrite.complete();
+
+      await expectLater(pending, completes);
+      expect(
+        await SettingsService(db).getBool(SettingKeys.telemetryCollection),
+        isTrue,
+      );
+    });
+  });
+
   group('TelemetryOptInPromptNotifier', () {
     test('records launch count for delayed prompt eligibility', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -537,6 +906,7 @@ class _CustomTelemetryException implements Exception {
 
 class _FakeAnalyticsClient implements TelemetryAnalyticsClient {
   final List<_AnalyticsEvent> events = <_AnalyticsEvent>[];
+  final collectionUpdates = <bool>[];
   bool? collectionEnabled;
   int resetCount = 0;
 
@@ -555,7 +925,68 @@ class _FakeAnalyticsClient implements TelemetryAnalyticsClient {
 
   @override
   Future<void> setCollectionEnabled({required bool enabled}) async {
+    collectionUpdates.add(enabled);
     collectionEnabled = enabled;
+  }
+}
+
+class _DelayedAnalyticsClient extends _FakeAnalyticsClient {
+  final enableStarted = Completer<void>();
+  final finishEnable = Completer<void>();
+
+  @override
+  Future<void> setCollectionEnabled({required bool enabled}) async {
+    if (enabled) {
+      enableStarted.complete();
+      await finishEnable.future;
+    }
+    await super.setCollectionEnabled(enabled: enabled);
+  }
+}
+
+class _DelayedTelemetryReadSettingsService extends SettingsService {
+  _DelayedTelemetryReadSettingsService(super.db);
+
+  final readStarted = Completer<void>();
+  final finishRead = Completer<bool>();
+
+  @override
+  Future<bool> getBool(String key, {bool defaultValue = false}) async {
+    if (key == SettingKeys.telemetryCollection && !readStarted.isCompleted) {
+      readStarted.complete();
+      return finishRead.future;
+    }
+    return super.getBool(key, defaultValue: defaultValue);
+  }
+}
+
+class _DelayedTelemetryWriteSettingsService extends SettingsService {
+  _DelayedTelemetryWriteSettingsService(
+    super.db, {
+    this.failEnable = false,
+    this.delayedValue = true,
+    this.failWrite = false,
+  });
+
+  final bool failEnable;
+  final bool delayedValue;
+  final bool failWrite;
+
+  final writeStarted = Completer<void>();
+  final finishWrite = Completer<void>();
+
+  @override
+  Future<void> setBool(String key, {required bool value}) async {
+    if (key == SettingKeys.telemetryCollection &&
+        value == delayedValue &&
+        !writeStarted.isCompleted) {
+      writeStarted.complete();
+      await finishWrite.future;
+      if (failWrite || (value && failEnable)) {
+        throw StateError('preference write failed');
+      }
+    }
+    await super.setBool(key, value: value);
   }
 }
 

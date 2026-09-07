@@ -1022,7 +1022,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     try {
       return await withSftpOperationTimeout(sftpOpenFuture);
     } on TimeoutException {
-      sftpOpenFuture.then(session.discardSftpClient).ignore();
+      session.discardSftpOpen(sftpOpenFuture);
       rethrow;
     }
   }

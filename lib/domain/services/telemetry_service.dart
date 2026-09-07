@@ -230,6 +230,7 @@ class TelemetryService {
   final TelemetryAnalyticsClient? _analyticsClient;
   final TelemetryCrashReporter? _crashReporter;
   bool _collectionEnabled;
+  Future<void> _collectionUpdates = Future<void>.value();
 
   /// Whether Firebase telemetry is available in this app run.
   bool get isAvailable => _status == TelemetryServiceStatus.ready;
@@ -244,6 +245,19 @@ class TelemetryService {
   Future<void> setCollectionEnabled({required bool enabled}) async {
     final wasEnabled = _collectionEnabled;
     _collectionEnabled = enabled;
+    // Gate events immediately, but apply native SDK changes in request order.
+    // Otherwise a slow enable can finish after a newer opt-out.
+    final operation = _collectionUpdates.then(
+      (_) => _applyCollectionEnabled(enabled: enabled, wasEnabled: wasEnabled),
+    );
+    _collectionUpdates = operation.catchError((Object _) {});
+    return operation;
+  }
+
+  Future<void> _applyCollectionEnabled({
+    required bool enabled,
+    required bool wasEnabled,
+  }) async {
     if (!isAvailable) {
       _diagnosticsLogger.info(
         'telemetry',
@@ -1081,6 +1095,8 @@ class TelemetryCollectionNotifier extends Notifier<bool> {
   late SettingsService _settingsService;
   late TelemetryService _telemetryService;
   bool _disposed = false;
+  int _revision = 0;
+  Future<void> _preferenceUpdates = Future<void>.value();
 
   @override
   bool build() {
@@ -1088,37 +1104,58 @@ class TelemetryCollectionNotifier extends Notifier<bool> {
     _telemetryService = ref.watch(telemetryServiceProvider);
     _disposed = false;
     ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
+    final revision = ++_revision;
+    Future.microtask(() => _init(revision));
     return _telemetryService.collectionEnabled;
   }
 
   /// Enables or disables telemetry collection.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(
-      SettingKeys.telemetryCollection,
-      value: enabled,
-    );
-    if (enabled) {
-      await _settingsService.setString(
-        SettingKeys.telemetryOptInPromptState,
-        TelemetryOptInPromptChoice.accepted.name,
-      );
-    }
-    await _telemetryService.setCollectionEnabled(enabled: enabled);
-    state = enabled;
+    // Invalidate initialization before the first await, not after persistence.
+    final revision = ++_revision;
+    final settings = _settingsService;
+    final telemetry = _telemetryService;
+    // Opt-out gates app events now, even if an older preference or SDK update
+    // is blocked. Keep its native disable/reset/delete work in the SDK queue.
+    final optOut = enabled
+        ? null
+        : telemetry.setCollectionEnabled(enabled: false);
+    final operation = _preferenceUpdates.then((_) async {
+      try {
+        await settings.setBool(SettingKeys.telemetryCollection, value: enabled);
+        if (enabled) {
+          await settings.setString(
+            SettingKeys.telemetryOptInPromptState,
+            TelemetryOptInPromptChoice.accepted.name,
+          );
+          // Persistence must succeed before opt-in, and an older enable must
+          // never reopen the event gate after a newer choice.
+          if (revision == _revision) {
+            await telemetry.setCollectionEnabled(enabled: true);
+          }
+        }
+      } finally {
+        // A failed preference write must not abandon opt-out cleanup.
+        await optOut;
+      }
+      if (!_disposed && revision == _revision) {
+        state = enabled;
+      }
+    });
+    // A failed write must not prevent a later opt-out from being persisted.
+    _preferenceUpdates = operation.catchError((Object _) {});
+    return operation;
   }
 
-  Future<void> _init() async {
+  Future<void> _init(int revision) async {
+    if (_disposed || revision != _revision) return;
+    final telemetry = _telemetryService;
     final enabled = await _settingsService.getBool(
       SettingKeys.telemetryCollection,
     );
-    if (_disposed) {
-      return;
-    }
-    await _telemetryService.setCollectionEnabled(enabled: enabled);
-    if (_disposed) {
-      return;
-    }
+    if (_disposed || revision != _revision) return;
+    await telemetry.setCollectionEnabled(enabled: enabled);
+    if (_disposed || revision != _revision) return;
     state = enabled;
   }
 }

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		64FEC829AD9E4536BBA5B301 /* SyncVaultFileIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64FEC829AD9E4536BBA5B302 /* SyncVaultFileIO.swift */; };
 		0BBA2D63F69B026808692429 /* ConnectionStatusAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */; };
 		0D148A56B5D9DF36A2760A83 /* ConnectionStatusLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */; };
 		10F236A3A094B53411236F3F /* ConnectionStatusLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */; };
@@ -69,6 +70,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		64FEC829AD9E4536BBA5B302 /* SyncVaultFileIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncVaultFileIO.swift; sourceTree = "<group>"; };
 		11A5A1B88F1D4C6EA1B2C300 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
@@ -186,6 +188,7 @@
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
+				64FEC829AD9E4536BBA5B302 /* SyncVaultFileIO.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */,
 				EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */,
@@ -454,6 +457,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
+				64FEC829AD9E4536BBA5B301 /* SyncVaultFileIO.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				0BBA2D63F69B026808692429 /* ConnectionStatusAttributes.swift in Sources */,
 				10F236A3A094B53411236F3F /* ConnectionStatusLiveActivityManager.swift in Sources */,

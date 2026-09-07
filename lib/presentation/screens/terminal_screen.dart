@@ -17976,7 +17976,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     try {
       return await sftpOpenFuture.timeout(_terminalPathVerificationTimeout);
     } on TimeoutException {
-      sftpOpenFuture.then(session.discardSftpClient).ignore();
+      session.discardSftpOpen(sftpOpenFuture);
       rethrow;
     }
   }

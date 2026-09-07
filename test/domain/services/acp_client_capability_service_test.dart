@@ -546,6 +546,441 @@ void main() {
       },
     );
 
+    group('session teardown admission', () {
+      void sendRequests(String prefix, String sessionId) {
+        transport
+          ..sendRequest('$prefix-terminal', 'terminal/create', {
+            'sessionId': sessionId,
+            'command': 'long-task',
+          })
+          ..sendRequest('$prefix-write', 'fs/write_text_file', {
+            'sessionId': sessionId,
+            'path': '/workspace/$prefix.txt',
+            'content': 'updated',
+          })
+          ..sendRequest('$prefix-permission', 'session/request_permission', {
+            'sessionId': sessionId,
+            'toolCall': {'toolCallId': '$prefix-call'},
+            'options': [
+              {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+            ],
+          })
+          ..sendRequest('$prefix-read', 'fs/read_text_file', {
+            'sessionId': sessionId,
+            'path': '/workspace/read.txt',
+          });
+      }
+
+      void expectRejected(String prefix) {
+        for (final kind in ['terminal', 'write', 'permission', 'read']) {
+          final response = transport.responseFor('$prefix-$kind');
+          expect(response['error'], {
+            'code': -32000,
+            'message': 'Request was cancelled',
+          });
+          expect(response.containsKey('result'), isFalse);
+        }
+        expect(files.files.containsKey('/workspace/$prefix.txt'), isFalse);
+        expect(
+          registry.requests.where(
+            (request) => request.id.startsWith('s:$prefix-'),
+          ),
+          isEmpty,
+        );
+      }
+
+      Future<void> expectAllowed(String prefix, String sessionId) async {
+        expect(transport.responseFor('$prefix-terminal')['result'], isNotNull);
+        expect(transport.responseFor('$prefix-read')['result'], {
+          'content': 'read',
+        });
+        expect(
+          registry.requests
+              .where((request) => request.sessionId == sessionId)
+              .map((request) => request.id),
+          unorderedEquals(['s:$prefix-write', 's:$prefix-permission']),
+        );
+        await service.approveWrite('s:$prefix-write');
+        await service.selectPermission('s:$prefix-permission', 'allow');
+        expect(utf8.decode(files.files['/workspace/$prefix.txt']!), 'updated');
+        expect(transport.responseFor('$prefix-write')['error'], isNull);
+        expect(transport.responseFor('$prefix-permission')['result'], {
+          'outcome': {'outcome': 'selected', 'optionId': 'allow'},
+        });
+      }
+
+      // Pending decisions retain their original response channel after reattach.
+      // Gate that channel so cancellation cannot block the live bridge's replies.
+      Future<void> gateCancellation(Completer<void> gate) async {
+        transport.sendRequest('cancel-gated', 'session/request_permission', {
+          'sessionId': 'session-1',
+          'toolCall': {'toolCallId': 'cancel-call'},
+          'options': [
+            {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+          ],
+        });
+        await _settle();
+        expect(registry.requests.single.id, 's:cancel-gated');
+        transport
+          ..gatedResponseId = 'cancel-gated'
+          ..responseGate = gate.future;
+        await service.detach();
+        final oldClient = client;
+        addTearDown(oldClient.close);
+        transport = _ServerTransport();
+        client = AcpClient(AcpJsonRpcConnection(transport: transport));
+        service.attach(client);
+      }
+
+      setUp(() {
+        files.files['/workspace/read.txt'] = Uint8List.fromList(
+          utf8.encode('read'),
+        );
+      });
+
+      for (final duringCancellation in [false, true]) {
+        final stage = duringCancellation
+            ? 'registry cancellation'
+            : 'terminal release';
+        for (final failCleanup in [false, true]) {
+          test('rejects new requests during $stage with failure=$failCleanup, '
+              'allows siblings and later resume', () async {
+            final gate = Completer<void>();
+            addTearDown(() {
+              if (!gate.isCompleted) gate.complete();
+            });
+            late Future<void> cleanupStarted;
+            if (duringCancellation) {
+              final oldTransport = transport;
+              await gateCancellation(gate);
+              cleanupStarted = oldTransport.gatedResponseStarted.future;
+            } else {
+              terminals.stdoutCancelGate = gate.future;
+              transport.sendRequest('owned-terminal', 'terminal/create', {
+                'sessionId': 'session-1',
+                'command': 'long-task',
+              });
+              await _settle();
+              cleanupStarted =
+                  terminals.processes.single.stdoutCancellationStarted.future;
+              terminals.stdoutCancelGate = null;
+            }
+
+            final failure = StateError('cleanup failed');
+            var finished = false;
+            final closing = service.closeSession('session-1');
+            final checkedClose = expectLater(
+              closing.whenComplete(() => finished = true),
+              failCleanup && !duringCancellation
+                  ? throwsA(same(failure))
+                  : completes,
+            );
+            await cleanupStarted;
+            expect(finished, isFalse);
+
+            sendRequests('blocked', 'session-1');
+            await _settle();
+            expectRejected('blocked');
+            expect(files.readPaths, isEmpty);
+            expect(terminals.commands, hasLength(duringCancellation ? 0 : 1));
+
+            sendRequests('sibling', 'session-2');
+            await _settle();
+            await expectAllowed('sibling', 'session-2');
+            expect(finished, isFalse);
+            expect(terminals.processes.last.killed, isFalse);
+
+            if (failCleanup) {
+              gate.completeError(failure);
+            } else {
+              gate.complete();
+            }
+            await checkedClose;
+            expect(finished, isTrue);
+            expect(registry.requests, isEmpty);
+
+            sendRequests('resumed', 'session-1');
+            await _settle();
+            await expectAllowed('resumed', 'session-1');
+            expect(terminals.processes.last.killed, isFalse);
+            expect(files.readPaths, hasLength(2));
+            expect(terminals.commands, hasLength(duringCancellation ? 2 : 3));
+          });
+        }
+      }
+
+      for (final releaseFirst in [false, true]) {
+        test(
+          'overlapping closes keep admission blocked when '
+          '${releaseFirst ? 'first' : 'second'} close finishes first',
+          () async {
+            final releaseGate = Completer<void>();
+            final cancellationGate = Completer<void>();
+            addTearDown(() {
+              if (!releaseGate.isCompleted) releaseGate.complete();
+              if (!cancellationGate.isCompleted) cancellationGate.complete();
+            });
+            terminals.stdoutCancelGate = releaseGate.future;
+            transport.sendRequest('owned-terminal', 'terminal/create', {
+              'sessionId': 'session-1',
+              'command': 'long-task',
+            });
+            await _settle();
+            final process = terminals.processes.single;
+            terminals.stdoutCancelGate = null;
+            final oldTransport = transport;
+            await gateCancellation(cancellationGate);
+
+            final firstClose = service.closeSession('session-1');
+            await process.stdoutCancellationStarted.future;
+            final secondClose = service.closeSession('session-1');
+            await oldTransport.gatedResponseStarted.future;
+            if (releaseFirst) {
+              releaseGate.complete();
+              await firstClose;
+            } else {
+              cancellationGate.complete();
+              await secondClose;
+            }
+
+            sendRequests('overlap-blocked', 'session-1');
+            sendRequests('sibling', 'session-2');
+            await _settle();
+            expectRejected('overlap-blocked');
+            await expectAllowed('sibling', 'session-2');
+            expect(terminals.commands, hasLength(2));
+            expect(files.readPaths, hasLength(1));
+
+            if (releaseFirst) {
+              cancellationGate.complete();
+            } else {
+              releaseGate.complete();
+            }
+            await Future.wait([firstClose, secondClose]);
+            sendRequests('resumed', 'session-1');
+            await _settle();
+            await expectAllowed('resumed', 'session-1');
+            expect(terminals.commands, hasLength(3));
+          },
+        );
+      }
+    });
+
+    for (final closeAll in [false, true]) {
+      final boundary = closeAll ? 'service close' : 'session close';
+      test('kills terminal starts that finish after $boundary', () async {
+        final gate = Completer<void>();
+        terminals.startGate = gate.future;
+        transport.sendRequest('late-create', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'long-task',
+        });
+        await _settle();
+        expect(terminals.commands, hasLength(1));
+
+        if (closeAll) {
+          await service.close();
+        } else {
+          await service.closeSession('session-1');
+        }
+        gate.complete();
+        await _settle();
+
+        expect(terminals.processes.single.killed, isTrue);
+        expect(transport.responseFor('late-create')['error'], isNotNull);
+      });
+
+      for (final duringRead in [false, true]) {
+        test('does not return file content after $boundary during '
+            '${duringRead ? 'read' : 'path validation'}', () async {
+          final gate = Completer<void>();
+          files.files['/workspace/read.txt'] = Uint8List.fromList(
+            utf8.encode('content'),
+          );
+          if (duringRead) {
+            files.readGate = gate.future;
+          } else {
+            files.canonicalizeGate = gate.future;
+          }
+          transport.sendRequest('late-read', 'fs/read_text_file', {
+            'sessionId': 'session-1',
+            'path': '/workspace/read.txt',
+          });
+          await _settle();
+          expect(files.readPaths, hasLength(duringRead ? 1 : 0));
+          if (closeAll) {
+            await service.close();
+          } else {
+            await service.closeSession('session-1');
+          }
+          gate.complete();
+          await _settle();
+
+          expect(files.readPaths, hasLength(duringRead ? 1 : 0));
+          final response = transport.responseFor('late-read');
+          expect(response['error'], isNotNull);
+          expect(response.containsKey('result'), isFalse);
+        });
+      }
+
+      for (final autoApprove in [false, true]) {
+        test(
+          'does not revive writes after $boundary with YOLO=$autoApprove',
+          () async {
+            await service.close();
+            registry = AcpPendingRequestRegistry();
+            service = AcpClientCapabilityService(
+              fileSystem: files,
+              terminalExecutor: terminals,
+              allowedRoots: const ['/workspace'],
+              registry: registry,
+              autoApprovePermissions: autoApprove,
+            )..attach(client);
+            final gate = Completer<void>();
+            files.canonicalizeGate = gate.future;
+            transport.sendRequest('late-write', 'fs/write_text_file', {
+              'sessionId': 'session-1',
+              'path': '/workspace/late.txt',
+              'content': 'late',
+            });
+            await _settle();
+
+            if (closeAll) {
+              await service.close();
+            } else {
+              await service.closeSession('session-1');
+            }
+            gate.complete();
+            await _settle();
+
+            expect(files.files, isEmpty);
+            expect(registry.requests, isEmpty);
+            expect(transport.responseFor('late-write')['error'], isNotNull);
+          },
+        );
+      }
+    }
+
+    for (final boundary in ['service', 'session', 'detach', 'sibling']) {
+      test(
+        'auto-approved write completion respects $boundary teardown',
+        () async {
+          final gate = Completer<void>();
+          files.writeGate = gate.future;
+          service.setSessionAutoApprovePermissions('session-1', enabled: true);
+          transport.sendRequest('gated-write', 'fs/write_text_file', {
+            'sessionId': 'session-1',
+            'path': '/workspace/a.txt',
+            'content': 'written',
+          });
+          await _settle();
+          expect(files.writePaths, ['/workspace/a.txt']);
+          expect(files.files, isEmpty);
+
+          switch (boundary) {
+            case 'service':
+              await service.close();
+            case 'session':
+              await service.closeSession('session-1');
+            case 'detach':
+              await service.detach();
+            case 'sibling':
+              await service.closeSession('session-2');
+          }
+          gate.complete();
+          await _settle();
+
+          // Teardown cannot undo an already issued remote write, but a canceled
+          // request must not send a success reply after the write finishes.
+          expect(utf8.decode(files.files['/workspace/a.txt']!), 'written');
+          final response = transport.responseFor('gated-write');
+          if (boundary == 'service' || boundary == 'session') {
+            expect(response['error'], isNotNull);
+            expect(response.containsKey('result'), isFalse);
+          } else {
+            expect(response['error'], isNull);
+            expect(response.containsKey('result'), isTrue);
+          }
+        },
+      );
+    }
+
+    test(
+      'does not start a terminal after its cwd validation is closed',
+      () async {
+        final gate = Completer<void>();
+        files.canonicalizeGate = gate.future;
+        transport.sendRequest('late-cwd', 'terminal/create', {
+          'sessionId': 'session-1',
+          'command': 'long-task',
+          'cwd': '/workspace',
+        });
+        await _settle();
+        await service.closeSession('session-1');
+        gate.complete();
+        await _settle();
+
+        expect(terminals.commands, isEmpty);
+        expect(transport.responseFor('late-cwd')['error'], isNotNull);
+      },
+    );
+
+    test('closing one session preserves sibling terminal starts', () async {
+      final gate = Completer<void>();
+      terminals.startGate = gate.future;
+      for (var index = 1; index <= 2; index++) {
+        transport.sendRequest('pending-$index', 'terminal/create', {
+          'sessionId': 'session-$index',
+          'command': 'long-task',
+        });
+      }
+      await _settle();
+      await service.closeSession('session-1');
+      gate.complete();
+      await _settle();
+
+      expect(terminals.processes[0].killed, isTrue);
+      expect(terminals.processes[1].killed, isFalse);
+      expect(transport.responseFor('pending-2')['result'], isNotNull);
+    });
+
+    test('soft detach preserves pending terminal starts', () async {
+      final gate = Completer<void>();
+      terminals.startGate = gate.future;
+      transport.sendRequest('detached-create', 'terminal/create', {
+        'sessionId': 'session-1',
+        'command': 'long-task',
+      });
+      await _settle();
+      await service.detach();
+      gate.complete();
+      await _settle();
+
+      expect(terminals.processes.single.killed, isFalse);
+      expect(transport.responseFor('detached-create')['result'], isNotNull);
+    });
+
+    test('permanently closed services cannot attach again', () async {
+      await service.close();
+      expect(() => service.attach(client), throwsStateError);
+    });
+
+    test('late request failures tolerate a closed response channel', () async {
+      final gate = Completer<void>();
+      terminals.startGate = gate.future;
+      transport.sendRequest('closed-create', 'terminal/create', {
+        'sessionId': 'session-1',
+        'command': 'long-task',
+      });
+      await _settle();
+      await service.close();
+      await client.close();
+      gate.completeError(StateError('SSH session closed'));
+      await _settle();
+
+      expect(terminals.processes, isEmpty);
+    });
+
     test('reserves terminal capacity across concurrent creates', () async {
       final gate = Completer<void>();
       terminals.startGate = gate.future;
@@ -816,6 +1251,9 @@ Future<void> _settle() => Future<void>.delayed(Duration.zero);
 final class _ServerTransport implements AcpTransport {
   final _incoming = StreamController<List<int>>();
   final messages = <Map<String, Object?>>[];
+  String? gatedResponseId;
+  Future<void>? responseGate;
+  final gatedResponseStarted = Completer<void>();
 
   @override
   Stream<List<int>> get incoming => _incoming.stream;
@@ -833,9 +1271,13 @@ final class _ServerTransport implements AcpTransport {
 
   @override
   Future<void> write(List<int> bytes) async {
-    messages.add(
-      (jsonDecode(utf8.decode(bytes).trim()) as Map).cast<String, Object?>(),
-    );
+    final message = (jsonDecode(utf8.decode(bytes).trim()) as Map)
+        .cast<String, Object?>();
+    if (message['id'] == gatedResponseId && responseGate != null) {
+      gatedResponseStarted.complete();
+      await responseGate;
+    }
+    messages.add(message);
   }
 
   Map<String, Object?> responseFor(Object id) =>
@@ -855,18 +1297,27 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
   final canonicalWritePaths = <String, String>{};
   final readPaths = <String>[];
   Exception? writeFailure;
+  Future<void>? canonicalizeGate;
+  Future<void>? readGate;
+  Future<void>? writeGate;
+  final writePaths = <String>[];
 
   @override
-  Future<String> canonicalizeExistingPath(String path) async =>
-      canonicalPaths[path] ?? path;
+  Future<String> canonicalizeExistingPath(String path) async {
+    if (canonicalizeGate case final gate?) await gate;
+    return canonicalPaths[path] ?? path;
+  }
 
   @override
-  Future<String> canonicalizeWritePath(String path) async =>
-      canonicalWritePaths[path] ?? canonicalPaths[path] ?? path;
+  Future<String> canonicalizeWritePath(String path) async {
+    if (canonicalizeGate case final gate?) await gate;
+    return canonicalWritePaths[path] ?? canonicalPaths[path] ?? path;
+  }
 
   @override
   Future<Uint8List> read(String path, {required int maxBytes}) async {
     readPaths.add(path);
+    if (readGate case final gate?) await gate;
     final bytes =
         files[path] ??
         (throw const AcpClientCapabilityException('Missing file'));
@@ -881,6 +1332,8 @@ final class _FakeFileSystem implements AcpRemoteFileSystem {
 
   @override
   Future<void> write(String path, Uint8List bytes) async {
+    writePaths.add(path);
+    if (writeGate case final gate?) await gate;
     final failure = writeFailure;
     if (failure != null) throw failure;
     files[path] = bytes;
@@ -891,19 +1344,34 @@ final class _FakeTerminalExecutor implements AcpTerminalExecutor {
   final processes = <_FakeTerminalProcess>[];
   final commands = <String>[];
   Future<void>? startGate;
+  Future<void>? stdoutCancelGate;
 
   @override
   Future<AcpTerminalProcess> start(String command) async {
     commands.add(command);
     if (startGate case final gate?) await gate;
-    final process = _FakeTerminalProcess();
+    final process = _FakeTerminalProcess(stdoutCancelGate: stdoutCancelGate);
     processes.add(process);
     return process;
   }
 }
 
 final class _FakeTerminalProcess implements AcpTerminalProcess {
-  final _stdout = StreamController<List<int>>.broadcast(sync: true);
+  _FakeTerminalProcess({this.stdoutCancelGate});
+
+  final Future<void>? stdoutCancelGate;
+  final stdoutCancellationStarted = Completer<void>();
+  late final StreamController<List<int>> _stdout = stdoutCancelGate == null
+      ? StreamController<List<int>>.broadcast(sync: true)
+      : StreamController<List<int>>(
+          sync: true,
+          onCancel: () {
+            stdoutCancellationStarted.complete();
+            return stdoutCancelGate!.whenComplete(() {
+              unawaited(_stdout.close());
+            });
+          },
+        );
   final _stderr = StreamController<List<int>>.broadcast(sync: true);
   final _exit = Completer<AcpTerminalExitStatus>();
   bool killed = false;
@@ -926,7 +1394,9 @@ final class _FakeTerminalProcess implements AcpTerminalProcess {
   void exit(AcpTerminalExitStatus status) {
     if (_exit.isCompleted) return;
     _exit.complete(status);
-    unawaited(_stdout.close());
+    // Keep gated stdout open so release() explicitly cancels the subscription,
+    // rather than stream completion triggering an automatic cancellation.
+    if (stdoutCancelGate == null) unawaited(_stdout.close());
     unawaited(_stderr.close());
   }
 

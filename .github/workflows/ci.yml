@@ -193,8 +193,30 @@ jobs:
       - name: Test release-note metadata
         run: ruby test/scripts/preview_release_notes_test.rb
 
+      - name: Test App Store version selection
+        run: ruby scripts/resolve_next_app_store_patch_version_test.rb
+
+      - name: Test SQLite prefetch isolation
+        run: python3 -m unittest discover -s test/scripts -p 'sqlite_native_assets_test.py'
+
+      - name: Test Windows UTF conversion failure paths
+        run: python3 -m unittest discover -s test/scripts -p 'windows_utf8_test.py'
+
       - name: Test store-assets archive safety
         run: python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'
+
+  native-file-tests:
+    name: Test native vault file operations
+    needs: changes
+    if: needs.changes.outputs.run_check == 'true'
+    runs-on: macos-26
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test Foundation file helper without Flutter
+        run: bash test/scripts/run_swift_native_tests.sh
 
   test:
     name: Test (Shard ${{ matrix.shard-index }}/4)
@@ -733,7 +755,7 @@ jobs:
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, monkeymux-assets, check, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs: [changes, monkeymux-assets, check, native-file-tests, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
     runs-on: ubicloud-standard-4
     timeout-minutes: 2
     steps:
@@ -742,6 +764,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           MONKEYMUX_ASSETS_RESULT: ${{ needs.monkeymux-assets.result }}
           CHECK_RESULT: ${{ needs.check.result }}
+          NATIVE_FILE_TESTS_RESULT: ${{ needs.native-file-tests.result }}
           TEST_RESULT: ${{ needs.test.result }}
           GO_TEST_RESULT: ${{ needs.go-test.result }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
@@ -755,6 +778,7 @@ jobs:
             "changes:$CHANGES_RESULT" \
             "monkeymux-assets:$MONKEYMUX_ASSETS_RESULT" \
             "check:$CHECK_RESULT" \
+            "native-file-tests:$NATIVE_FILE_TESTS_RESULT" \
             "test:$TEST_RESULT" \
             "go-test:$GO_TEST_RESULT" \
             "build-android:$ANDROID_RESULT" \

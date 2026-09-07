@@ -307,6 +307,7 @@ class HostEditViewModel extends Notifier<HostEditState> {
 
     state = state.copyWith(isLoading: true);
     final host = await ref.read(hostRepositoryProvider).getById(editingHostId);
+    if (!ref.mounted) return null;
     if (host == null) {
       state = state.copyWith(isLoading: false, existingHost: null);
       return null;
@@ -315,12 +316,15 @@ class HostEditViewModel extends Notifier<HostEditState> {
     final portForwards = await ref
         .read(portForwardRepositoryProvider)
         .getByHostId(host.id);
+    if (!ref.mounted) return null;
     final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(host.id);
+    if (!ref.mounted) return null;
     final cliLaunchPreferences = await ref
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(host.id);
+    if (!ref.mounted) return null;
 
     state = state.copyWith(
       isLoading: false,
