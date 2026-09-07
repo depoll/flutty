@@ -816,8 +816,8 @@ func (b *acpBridge) waitForProviderOutput() {
 }
 
 // Register requests before writing stdin: a provider can respond before Write
-// returns. Successful writes commit client metadata separately; failed writes
-// release all registrations without changing the session identity.
+// returns. Only a successful setup response commits the session identity;
+// failed writes release all registrations.
 func (b *acpBridge) trackClientRequest(raw json.RawMessage) (string, bool) {
 	id, hasID, hasMethod := acpJSONRPCIdentity(raw)
 	if !hasID || !hasMethod {
@@ -885,17 +885,9 @@ func (b *acpBridge) observeClientMessage(raw json.RawMessage) {
 	if !hasID {
 		return
 	}
-	method, sessionID := acpJSONRPCRequestSession(raw)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if hasMethod {
-		// A response may already have committed the provider's session ID and
-		// removed the registration. Do not overwrite it with the request's ID.
-		if _, pending := b.sessionSetupRequests[id]; pending &&
-			isAcpSessionSetupMethod(method) && validAcpSessionID(sessionID) {
-			b.sessionID = sessionID
-		}
-	} else {
+	if !hasMethod {
 		delete(b.pendingRequests, id)
 		b.releasePendingReplayLocked(id)
 	}
@@ -941,17 +933,25 @@ func acpJSONRPCResponseResult(raw json.RawMessage) (json.RawMessage, bool) {
 	return append(json.RawMessage(nil), envelope.Result...), true
 }
 
-func acpJSONRPCResponseSessionID(raw json.RawMessage) string {
+// Keep success separate from the session ID: a successful load may omit the ID
+// (including a null result), but an error must never commit the requested ID.
+func acpJSONRPCResponseSessionID(raw json.RawMessage) (string, bool) {
 	var envelope struct {
-		Result struct {
-			SessionID string `json:"sessionId"`
-		} `json:"result"`
+		Result json.RawMessage `json:"result"`
+		Error  json.RawMessage `json:"error"`
 	}
-	if json.Unmarshal(raw, &envelope) != nil ||
-		!validAcpSessionID(envelope.Result.SessionID) {
-		return ""
+	if json.Unmarshal(raw, &envelope) != nil || len(envelope.Error) > 0 ||
+		len(envelope.Result) == 0 {
+		return "", false
 	}
-	return envelope.Result.SessionID
+	var result struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(envelope.Result, &result) != nil ||
+		!validAcpSessionID(result.SessionID) {
+		return "", true
+	}
+	return result.SessionID, true
 }
 
 func acpJSONRPCIdentity(raw json.RawMessage) (string, bool, bool) {
@@ -1003,10 +1003,12 @@ func (b *acpBridge) publish(
 			delete(b.initializeRequestIDs, providerResponseID)
 		}
 		if requestedSessionID, ok := b.sessionSetupRequests[providerResponseID]; ok {
-			if sessionID := acpJSONRPCResponseSessionID(data); sessionID != "" {
-				b.sessionID = sessionID
-			} else if validAcpSessionID(requestedSessionID) {
-				b.sessionID = requestedSessionID
+			if sessionID, success := acpJSONRPCResponseSessionID(data); success {
+				if sessionID != "" {
+					b.sessionID = sessionID
+				} else if validAcpSessionID(requestedSessionID) {
+					b.sessionID = requestedSessionID
+				}
 			}
 			delete(b.sessionSetupRequests, providerResponseID)
 		}

@@ -16,7 +16,7 @@ Areas traced included:
 
 ### ACP and MonkeyMux
 
-The helper version is bumped to `0.1.184`, keeping the compiled version and generated manifest aligned so the normal update path recognizes the patched helper.
+The helper version is bumped to `0.1.185`, keeping the compiled version and generated manifest aligned so the normal update path recognizes the patched helper.
 
 - **Shutdown could wait forever for a blocked provider write.** `remote/monkeymux/acp_bridge.go` now protects stdin ownership separately from frame serialization. Closing the pipe can interrupt a blocked write rather than waiting for the writer's lock.
 - **A fast provider response could arrive before request registration.** The bridge registers requests before writing, removes registrations on write failure, and does not overwrite the provider's returned session ID with stale request metadata. This prevents completed requests from remaining in flight and preserves session identity.
@@ -63,13 +63,13 @@ These changes do not alter valid protocol formats or intended UI behavior. Bug f
 | Check | Result |
 | --- | --- |
 | `flutter analyze --no-pub` | No issues |
-| `flutter test --no-pub --reporter expanded` | 4,027 passed; one opt-in localhost SSH test skipped |
+| `flutter test --no-pub --reporter expanded` | 4,039 passed; one opt-in localhost SSH test skipped |
 | Full vendored xterm suite, run from `third_party/xterm` with its own dependencies | 358 passed before the 12 new CSI cases were moved into the root suite |
 | `GOTOOLCHAIN=go1.26.5 go test -race ./...`, in `remote/monkeymux` | Passed on macOS arm64 |
 | Go 1.26.5 Linux amd64 and Windows amd64 test-binary compilation | Passed; not runtime execution |
-| Bundled MonkeyMux `0.1.184` assets | Built all six OS/architecture targets; generated assets remain untracked |
+| Bundled MonkeyMux `0.1.185` assets | Built all six OS/architecture targets; generated assets remain untracked |
 | `GOTOOLCHAIN=go1.26.5 go vet ./...` and changed Go formatting | Passed |
-| `python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'` | 17 passed |
+| `python3 -m unittest discover -s test/scripts -p 'store_assets_test.py'` | 20 passed |
 | Release version resolver and release-note metadata tests | 21 tests / 42 assertions and 4 tests / 15 assertions passed |
 | Both store metadata validators | Passed |
 | Shell syntax, ShellCheck, and shfmt | Passed |
@@ -79,10 +79,21 @@ Regression probes also demonstrated failures on the original implementations for
 
 The agent's LSP integration produced inconclusive checks and stale partial-file syntax reports. Fresh Dart analysis and executable tests were used for validation; invalid automatic edits were removed rather than accepted as fixes.
 
+## PR review follow-up
+
+A further Astra subagent reviewed all 37 changed files in [PR #808](https://github.com/depollsoft/MonkeySSH/pull/808). The following corrections address both that review and the [manifest count feedback](https://github.com/depollsoft/MonkeySSH/pull/808#discussion_r3946648901):
+
+- Require manifest `file_count` to be an integer equal to the number of entries before clearing media. Ten malformed-count scenarios failed before the correction; the full 20-test archive suite now passes, including legacy archives without a manifest.
+- Share pending SSH shell negotiation and teardown. Concurrent ordinary getters receive the same usable shell, failed opens can be retried, and a getter arriving during explicit replacement cannot overtake the requested command. Stale opening cleanup cannot clear a newer future. PTY metadata is committed only for an accepted channel.
+- Commit a Go ACP bridge's durable session identity only after a successful setup response. Fast and delayed errors preserve the previous identity. Successful responses without an ID use the requested ID; returned IDs retain precedence.
+- Bind RPC timeout, cancellation, and deferred write/encoding cleanup to the original pending record rather than its reusable ID. Old callbacks and cancellation handles cannot remove a newer request.
+
+These runtime regressions were reproduced before fixing them. A separate Astra follow-up review found no remaining blocking issue, with 33 targeted Dart tests/probes, 20 archive tests, and repeated Go race probes passing independently. The final integrated checks passed 4,039 app tests, the complete Go 1.26.5 race suite, analysis, and Linux/Windows test-binary cross-compilation. The helper was bumped to `0.1.185` and all six bundles rebuilt. The earlier PR commit also passed hosted CI, including Linux/Windows Go execution and all five native build targets; those results do not substitute for CI on the follow-up commits.
+
 ## Limits and follow-up areas
 
 - The skipped `test/integration/acp_ssh_bridge_e2e_test.dart` requires the opt-in localhost SSH environment. No physical-device IME timing, live provider, store API, signing, or publication workflow was exercised.
 - Go runtime coverage here is macOS. Linux and Windows were cross-compiled; CI must provide their runtime coverage.
 - Archive installation is prevalidated but is not a filesystem transaction. Disk failures and concurrent filesystem changes can still leave a partial installation.
-- Overlapping ACP setup responses/writer handover, simultaneous shell opens, channel-negotiation deadlines, forwarding-client cleanup, and key-change concurrency deserve further targeted tests.
+- Overlapping ACP setup responses/writer handover, channel-negotiation deadlines, forwarding-client cleanup, and key-change concurrency deserve further targeted tests.
 - The MonkeyMux asset fingerprint still includes Go test files. Removing unnecessary rebuilds was deferred in favor of data-integrity fixes.

@@ -61,6 +61,15 @@ func TestAcpAuditFastProviderResponse(t *testing.T) {
 
 func auditAcpSendAndStatus(t *testing.T, bridge *acpBridge, data json.RawMessage) *acpBridgeInfo {
 	t.Helper()
+	peer, reader := auditAcpAttach(t, bridge)
+	if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "input", Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	return auditAcpStatus(t, peer, reader)
+}
+
+func auditAcpAttach(t *testing.T, bridge *acpBridge) (net.Conn, *bufio.Reader) {
+	t.Helper()
 	server, peer := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -83,9 +92,11 @@ func auditAcpSendAndStatus(t *testing.T, bridge *acpBridge, data json.RawMessage
 	if _, err := readAcpWireFrame(reader); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "input", Data: data}); err != nil {
-		t.Fatal(err)
-	}
+	return peer, reader
+}
+
+func auditAcpStatus(t *testing.T, peer net.Conn, reader *bufio.Reader) *acpBridgeInfo {
+	t.Helper()
 	if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "status"}); err != nil {
 		t.Fatal(err)
 	}
@@ -101,21 +112,90 @@ func auditAcpSendAndStatus(t *testing.T, bridge *acpBridge, data json.RawMessage
 }
 
 func TestAcpAuditFailedProviderWriteDoesNotRetainRequest(t *testing.T) {
-	for _, method := range []string{"initialize", "session/new", "session/load", "session/prompt"} {
-		t.Run(method, func(t *testing.T) {
-			bridge := newAuditAcpBridge()
-			bridge.sessionID = "existing-session"
-			bridge.stdin = auditAcpWriteCloser{write: func([]byte) (int, error) { return 0, io.ErrClosedPipe }}
-			status := auditAcpSendAndStatus(t, bridge, json.RawMessage(`{"id":1,"method":"`+method+`","params":{"sessionId":"failed-session"}}`))
-			if status.InFlightTurn != 0 || status.SessionID != "existing-session" {
-				t.Fatalf("failed write changed metadata: %+v", status)
+	for _, method := range []string{"initialize", "session/new", "session/load", "session/resume", "session/fork", "session/prompt"} {
+		for _, failOn := range []string{"payload", "newline"} {
+			t.Run(method+"/"+failOn, func(t *testing.T) {
+				bridge := newAuditAcpBridge()
+				bridge.sessionID = "existing-session"
+				bridge.stdin = auditAcpWriteCloser{write: func(data []byte) (int, error) {
+					if failOn == "payload" || bytes.Equal(data, []byte{'\n'}) {
+						return 0, io.ErrClosedPipe
+					}
+					return len(data), nil
+				}}
+				status := auditAcpSendAndStatus(t, bridge, json.RawMessage(`{"id":1,"method":"`+method+`","params":{"sessionId":"failed-session"}}`))
+				if status.InFlightTurn != 0 || status.SessionID != "existing-session" {
+					t.Fatalf("failed write changed metadata: %+v", status)
+				}
+				bridge.mu.Lock()
+				defer bridge.mu.Unlock()
+				if len(bridge.sessionSetupRequests) != 0 || len(bridge.initializeRequestIDs) != 0 {
+					t.Error("failed write retained request")
+				}
+			})
+		}
+	}
+}
+
+func TestAcpAuditSessionSetupCommitsOnlySuccessfulResponse(t *testing.T) {
+	responses := []struct {
+		name      string
+		body      string
+		sessionID string
+	}{
+		{"provider_error", `"error":{"code":-32000,"message":"Session not found"}`, "existing-session"},
+		{"returned_id", `"result":{"sessionId":"returned-session"}`, "returned-session"},
+		{"no_id", `"result":{}`, "requested-session"},
+		{"null_result", `"result":null`, "requested-session"},
+		{"missing_result", `"unexpected":{}`, "existing-session"},
+		{"error_with_result", `"error":{"code":-32000,"message":"Session not found"},"result":{"sessionId":"returned-session"}`, "existing-session"},
+	}
+	for _, method := range []string{"session/new", "session/load", "session/resume", "session/fork"} {
+		for _, timing := range []string{"fast", "delayed"} {
+			for _, response := range responses {
+				t.Run(method+"/"+timing+"/"+response.name, func(t *testing.T) {
+					bridge := newAuditAcpBridge()
+					bridge.sessionID = "existing-session"
+					rawResponse := json.RawMessage(`{"jsonrpc":"2.0","id":1,` + response.body + `}`)
+					bridge.stdin = auditAcpWriteCloser{write: func(data []byte) (int, error) {
+						if timing == "fast" && bytes.Equal(data, []byte{'\n'}) {
+							// Respond before Write returns to exercise pre-write tracking.
+							bridge.publish("output", rawResponse, "", nil)
+						}
+						return len(data), nil
+					}}
+					peer, reader := auditAcpAttach(t, bridge)
+					request := json.RawMessage(`{"jsonrpc":"2.0","id":1,"method":"` + method + `","params":{"sessionId":"requested-session"}}`)
+					if err := writeAcpWireFrame(peer, acpWireMessage{Version: 1, Type: "input", Data: request}); err != nil {
+						t.Fatal(err)
+					}
+					if timing == "delayed" {
+						// Status is a barrier: handleAttach has finished observing the
+						// successful write, but no provider response has arrived yet.
+						pending := auditAcpStatus(t, peer, reader)
+						if pending.SessionID != "existing-session" || pending.InFlightTurn != 1 {
+							t.Errorf("pending setup changed durable metadata: %+v", pending)
+						}
+						bridge.mu.Lock()
+						requestedID, tracked := bridge.sessionSetupRequests["1"]
+						bridge.mu.Unlock()
+						if !tracked || requestedID != "requested-session" {
+							t.Errorf("pending setup tracking = %q, %v", requestedID, tracked)
+						}
+						bridge.publish("output", rawResponse, "", nil)
+					}
+					status := auditAcpStatus(t, peer, reader)
+					if status.SessionID != response.sessionID || status.InFlightTurn != 0 {
+						t.Errorf("completed setup metadata = %+v, want session %q and no in-flight requests", status, response.sessionID)
+					}
+					bridge.mu.Lock()
+					defer bridge.mu.Unlock()
+					if len(bridge.sessionSetupRequests) != 0 || len(bridge.initializeRequestIDs) != 0 {
+						t.Error("completed setup retained request tracking")
+					}
+				})
 			}
-			bridge.mu.Lock()
-			defer bridge.mu.Unlock()
-			if len(bridge.sessionSetupRequests) != 0 || len(bridge.initializeRequestIDs) != 0 {
-				t.Error("failed write retained request")
-			}
-		})
+		}
 	}
 }
 

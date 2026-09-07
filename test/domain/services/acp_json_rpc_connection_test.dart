@@ -131,6 +131,169 @@ void main() {
     next.cancel();
     await cancelled;
   });
+
+  test('async encoding cleanup does not remove a reused request ID', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    addTearDown(connection.close);
+    final cyclic = <Object?>[];
+    cyclic.add(cyclic);
+    final invalid = connection.sendRequest(
+      'invalid',
+      id: 'same',
+      params: cyclic,
+    );
+    final cancelled = expectLater(
+      invalid.future,
+      throwsA(isA<AcpRequestCancelledException>()),
+    );
+    invalid.cancel();
+    // Reuse synchronously, before the encoding failure's cleanup runs.
+    final valid = connection.sendRequest('valid', id: 'same');
+    final response = expectLater(valid.future, completion('ok'));
+    await cancelled;
+    await Future<void>.delayed(Duration.zero);
+    expect(_decodeWrite(transport.writes.single)['method'], 'valid');
+    expect(connection.isClosed, isFalse);
+    transport.add(
+      _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
+    );
+    await response;
+  });
+
+  for (final outcome in ['response', 'cancellation', 'timeout', 'encoding']) {
+    test(
+      'stale cancellation after $outcome does not cancel reused ID',
+      () async {
+        final transport = _MemoryTransport();
+        final connection = AcpJsonRpcConnection(transport: transport);
+        addTearDown(connection.close);
+        final cyclic = <Object?>[];
+        cyclic.add(cyclic);
+        final original = connection.sendRequest(
+          'original',
+          id: 7,
+          params: outcome == 'encoding' ? cyclic : null,
+          timeout: outcome == 'timeout' ? Duration.zero : null,
+        );
+        switch (outcome) {
+          case 'response':
+            transport.add(
+              _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'original'}),
+            );
+            expect(await original.future, 'original');
+          case 'cancellation':
+            final cancelled = expectLater(
+              original.future,
+              throwsA(isA<AcpRequestCancelledException>()),
+            );
+            original.cancel();
+            await cancelled;
+          case 'timeout':
+            await expectLater(
+              original.future,
+              throwsA(isA<AcpRequestTimeoutException>()),
+            );
+          case 'encoding':
+            await expectLater(original.future, throwsA(isA<JsonCyclicError>()));
+        }
+        final replacement = connection.sendRequest('replacement', id: 7);
+        final response = expectLater(
+          replacement.future,
+          completion('replacement'),
+        );
+        original
+          ..cancel()
+          ..cancel();
+        transport.add(
+          _encodeMessage({'jsonrpc': '2.0', 'id': 7, 'result': 'replacement'}),
+        );
+        await response;
+        expect(connection.isClosed, isFalse);
+      },
+    );
+  }
+
+  test('cancelled request timer does not expire a reused ID', () async {
+    final transport = _MemoryTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    addTearDown(connection.close);
+    final original = connection.sendRequest(
+      'original',
+      id: 'same',
+      timeout: Duration.zero,
+    );
+    final cancelled = expectLater(
+      original.future,
+      throwsA(isA<AcpRequestCancelledException>()),
+    );
+    original.cancel();
+    final replacement = connection.sendRequest(
+      'replacement',
+      id: 'same',
+      noTimeout: true,
+    );
+    final response = expectLater(replacement.future, completion('ok'));
+    await cancelled;
+    await Future<void>.delayed(Duration.zero);
+    transport.add(
+      _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
+    );
+    await response;
+  });
+
+  test(
+    'duplicate active ID rejection preserves the original request',
+    () async {
+      final transport = _MemoryTransport();
+      final connection = AcpJsonRpcConnection(transport: transport);
+      addTearDown(connection.close);
+      final original = connection.sendRequest('original', id: 'same');
+      expect(
+        () => connection.sendRequest('duplicate', id: 'same'),
+        throwsStateError,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(_decodeWrite(transport.writes.single)['method'], 'original');
+      transport.add(
+        _encodeMessage({'jsonrpc': '2.0', 'id': 'same', 'result': 'ok'}),
+      );
+      expect(await original.future, 'ok');
+    },
+  );
+
+  test('old transport write failure still terminates a reused ID', () async {
+    final transport = _GatedTransport();
+    final connection = AcpJsonRpcConnection(transport: transport);
+    addTearDown(connection.close);
+    final original = connection.sendRequest('original', id: 'same');
+    final cancelled = expectLater(
+      original.future,
+      throwsA(isA<AcpRequestCancelledException>()),
+    );
+    await transport.writeStarted.future;
+    original.cancel();
+    final replacement = connection.sendRequest('replacement', id: 'same');
+    final rejected = expectLater(
+      replacement.future,
+      throwsA(isA<AcpConnectionClosedException>()),
+    );
+    final error = expectLater(
+      connection.errors.first,
+      completion(isA<AcpConnectionClosedException>()),
+    );
+    transport.finishClose.complete();
+    transport.finishWrite.completeError(StateError('write failed'));
+    await Future.wait([cancelled, rejected, error]);
+    await connection.close();
+    expect(connection.isClosed, isTrue);
+    expect(transport.closed, isTrue);
+    expect(
+      () => connection.sendRequest('after failure'),
+      throwsA(isA<AcpConnectionClosedException>()),
+    );
+  });
+
   test(
     'decoded input skips byte parsing and preserves immutable identity',
     () async {
