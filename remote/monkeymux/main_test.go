@@ -6470,6 +6470,37 @@ func TestRedrawResizePreservesOneShotKittyTransmit(t *testing.T) {
 	waitForRecordedOutput(t, conn, want)
 }
 
+func TestRedrawOutputDoesNotAdvanceWindowActivity(t *testing.T) {
+	server := newMuxServer("test")
+	baseline := time.Now().Add(-time.Minute)
+	window := &muxWindow{
+		id:                     "@1",
+		index:                  0,
+		lastActivity:           baseline,
+		redrawForwardingPaused: true,
+	}
+	server.windows = []*muxWindow{window}
+	server.activeID = window.id
+
+	server.handleWindowOutput(window.id, []byte("synthetic redraw"))
+
+	if !window.lastActivity.Equal(baseline) {
+		t.Fatalf(
+			"redraw activity = %v, want preserved baseline %v",
+			window.lastActivity,
+			baseline,
+		)
+	}
+
+	server.mu.Lock()
+	window.redrawForwardingPaused = false
+	server.mu.Unlock()
+	server.handleWindowOutput(window.id, []byte("normal output"))
+	if !window.lastActivity.After(baseline) {
+		t.Fatalf("normal output did not advance activity: %v", window.lastActivity)
+	}
+}
+
 func TestRedrawResizeDropsSupersededBufferedAttachOutput(t *testing.T) {
 	server := newMuxServer("test")
 	conn := &recordingConn{}

@@ -6476,7 +6476,12 @@ func (s *muxServer) handleWindowOutput(windowID string, chunk []byte) {
 		s.activeID == windowID && s.attachCountLocked() > 0
 	before := window.broadcastIdentityLocked()
 	wasAlert := window.alert
-	window.lastActivity = now
+	if !window.redrawForwardingPaused {
+		// A switch/restore redraw is output produced only because MonkeyMux
+		// resized the foreground TUI. Keep its previous activity timestamp so
+		// selecting an idle window does not make it look busy.
+		window.lastActivity = now
+	}
 	window.refreshProcessMetadataLocked(now)
 	// Modes are observed before metadata so a `CSI ? 9001 h` arriving in the
 	// same chunk as a colour query is already reflected when the query is
