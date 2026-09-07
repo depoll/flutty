@@ -454,6 +454,8 @@ final class AcpClientCapabilityService {
   // Routing outlives the stream callback. Permanent teardown invalidates these
   // continuations before awaiting cleanup; soft detach deliberately keeps them.
   final _activeRequests = <AcpJsonRpcServerRequest, String?>{};
+  // Count overlapping teardowns so admission resumes only after all finish.
+  final _closingSessions = <String, int>{};
   var _closed = false;
   StreamSubscription<AcpServerRequest>? _subscription;
   var _nextTerminalId = 0;
@@ -519,17 +521,30 @@ final class AcpClientCapabilityService {
   /// other live sessions still use: closing the whole capability service
   /// with [close] would incorrectly cancel those other sessions' pending
   /// requests too and stop routing their `fs`/`terminal` requests.
+  ///
+  /// Rejects new requests for this session until all overlapping teardowns
+  /// finish. The session may resume on this bridge afterward.
   Future<void> closeSession(String sessionId) async {
-    _activeRequests.removeWhere((_, owner) => owner == sessionId);
-    _sessionAutoApprovePermissions.remove(sessionId);
-    final owned = _terminals.entries
-        .where((entry) => entry.value.sessionId == sessionId)
-        .toList(growable: false);
-    for (final entry in owned) {
-      _terminals.remove(entry.key);
+    _closingSessions.update(sessionId, (count) => count + 1, ifAbsent: () => 1);
+    try {
+      _activeRequests.removeWhere((_, owner) => owner == sessionId);
+      _sessionAutoApprovePermissions.remove(sessionId);
+      final owned = _terminals.entries
+          .where((entry) => entry.value.sessionId == sessionId)
+          .toList(growable: false);
+      for (final entry in owned) {
+        _terminals.remove(entry.key);
+      }
+      await Future.wait<void>(owned.map((entry) => entry.value.release()));
+      await registry.cancelForSession(sessionId);
+    } finally {
+      final remaining = _closingSessions[sessionId]! - 1;
+      if (remaining == 0) {
+        _closingSessions.remove(sessionId);
+      } else {
+        _closingSessions[sessionId] = remaining;
+      }
     }
-    await Future.wait<void>(owned.map((entry) => entry.value.release()));
-    await registry.cancelForSession(sessionId);
   }
 
   /// Returns a pending write body for explicit in-memory review only.
@@ -612,11 +627,12 @@ final class AcpClientCapabilityService {
   Future<void> _route(AcpJsonRpcServerRequest request) async {
     final startedAt = DateTime.now();
     try {
-      if (!_closed) {
-        _activeRequests[request] = AcpJson.string(
-          AcpJson.object(request.params) ?? const <String, Object?>{},
-          'sessionId',
-        );
+      final sessionId = AcpJson.string(
+        AcpJson.object(request.params) ?? const <String, Object?>{},
+        'sessionId',
+      );
+      if (!_closed && !_closingSessions.containsKey(sessionId)) {
+        _activeRequests[request] = sessionId;
       }
       _ensureRequestActive(request);
       switch (request.method) {

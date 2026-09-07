@@ -68,6 +68,73 @@ void main() {
     expect(cache.getLayoutFromCache(2), same(other));
   });
 
+  test('requires positive capacity so returned paragraphs stay owned', () {
+    for (final size in [0, -1]) {
+      expect(() => ParagraphCache(size), throwsArgumentError);
+    }
+  });
+
+  test('replacement promotes the key and cache misses preserve recency', () {
+    final cache = ParagraphCache(2);
+    addTearDown(cache.clear);
+    final old = cache.performAndCacheLayout(
+      'old',
+      const TextStyle(),
+      TextScaler.noScaling,
+      1,
+    );
+    final lru = cache.performAndCacheLayout(
+      'lru',
+      const TextStyle(),
+      TextScaler.noScaling,
+      2,
+    );
+    final replacement = cache.performAndCacheLayout(
+      'new',
+      const TextStyle(),
+      TextScaler.noScaling,
+      1,
+    );
+    expect(old.debugDisposed, isTrue);
+    expect(lru.debugDisposed, isFalse);
+    expect(cache.getLayoutFromCache(99), isNull);
+    final newest = cache.performAndCacheLayout(
+      'newest',
+      const TextStyle(),
+      TextScaler.noScaling,
+      3,
+    );
+    expect(lru.debugDisposed, isTrue);
+    expect(replacement.debugDisposed, isFalse);
+    expect(newest.debugDisposed, isFalse);
+    expect(cache.length, 2);
+  });
+
+  test('capacity-one churn disposes each evicted paragraph', () {
+    final cache = ParagraphCache(1);
+    addTearDown(cache.clear);
+    var previous = cache.performAndCacheLayout(
+      '0',
+      const TextStyle(),
+      TextScaler.noScaling,
+      0,
+    );
+    for (var key = 1; key <= 20; key++) {
+      final next = cache.performAndCacheLayout(
+        '$key',
+        const TextStyle(),
+        TextScaler.noScaling,
+        key,
+      );
+      expect(previous.debugDisposed, isTrue);
+      expect(next.debugDisposed, isFalse);
+      expect(cache.length, 1);
+      previous = next;
+    }
+    cache.clear();
+    expect(previous.debugDisposed, isTrue);
+  });
+
   test('cache hits still promote the least recently used entry', () {
     final cache = ParagraphCache(2);
     addTearDown(cache.clear);
@@ -83,9 +150,6 @@ void main() {
       TextScaler.noScaling,
       2,
     );
-    // Quiver owns capacity eviction; its uncached native object can be released
-    // here because the test deliberately keeps a reference to it.
-    addTearDown(evicted.dispose);
     expect(cache.getLayoutFromCache(1), same(first));
     final third = cache.performAndCacheLayout(
       'c',
@@ -93,6 +157,9 @@ void main() {
       TextScaler.noScaling,
       3,
     );
+    expect(evicted.debugDisposed, isTrue);
+    expect(first.debugDisposed, isFalse);
+    expect(third.debugDisposed, isFalse);
     expect(cache.length, 2);
     expect(cache.getLayoutFromCache(2), isNull);
     expect(cache.getLayoutFromCache(1), same(first));
