@@ -113,6 +113,104 @@ void main() {
     );
   });
 
+  group('Pi package migration', () {
+    final definition = agentCliRuntimeDefinitions.singleWhere(
+      (definition) => definition.id == 'cli:pi',
+    );
+    const package = '@earendil-works/pi-coding-agent';
+
+    for (final windows in [false, true]) {
+      test('Pi installs use the current package, windows=$windows', () {
+        expect(definition.registry, AgentPackageRegistry.npm);
+        expect(definition.packageName, package);
+        for (final update in [false, true]) {
+          final command = buildAgentInstallCommand(
+            definition,
+            windows: windows,
+            update: update,
+            detectionSource: 'npm global',
+          )!;
+          final script = windows ? _decodePowerShellCommand(command) : command;
+          expect(script, contains(package));
+          expect(script, isNot(contains('@mariozechner/')));
+        }
+        final command = buildAgentInstallCommand(
+          definition,
+          windows: windows,
+          update: true,
+          executablePath: windows ? r'C:\tools\pi.cmd' : '/usr/local/bin/pi',
+        )!;
+        final script = windows ? _decodePowerShellCommand(command) : command;
+        expect(script, contains("'update' '--self'"));
+        expect(script, isNot(contains('npm install')));
+        expect(
+          agentAcpRuntimeDefinitions
+              .singleWhere((d) => d.id == 'acp:pi')
+              .packageName,
+          'pi-acp',
+        );
+      });
+
+      for (final batched in [false, true]) {
+        test(
+          'Pi detects 0.85.1 from 0.85.0, windows=$windows, batched=$batched',
+          () async {
+            final client = _MockSshClient();
+            final session = _remoteSession(client);
+            when(() => client.remoteVersion).thenReturn(
+              windows
+                  ? 'SSH-2.0-OpenSSH_for_Windows_9.5'
+                  : 'SSH-2.0-OpenSSH_9.9',
+            );
+            expect(session.remoteIsWindows, windows);
+            final commands = <String>[];
+            when(
+              () => client.execute(any(), pty: any(named: 'pty')),
+            ).thenAnswer((invocation) async {
+              final command = invocation.positionalArguments.first as String;
+              final script = windows
+                  ? _decodePowerShellCommand(command)
+                  : command;
+              commands.add(script);
+              if (script.contains('__monkeyssh_agent_path__')) {
+                return _execOutput(
+                  '__monkeyssh_agent_runtime__=cli:pi\n'
+                  '__monkeyssh_agent_path__=/usr/local/bin/pi\n'
+                  '__monkeyssh_agent_version__=0.85.0\n'
+                  '__monkeyssh_agent_runtime_end__\n',
+                );
+              }
+              final currentPackage = script.contains("npm view '$package'");
+              return _execOutput(
+                '__monkeyssh_agent_runtime__=cli:pi\n'
+                '__monkeyssh_agent_source__=npm global\n'
+                '__monkeyssh_agent_installed__=0.85.0\n'
+                '__monkeyssh_agent_latest__=${currentPackage ? '0.85.1' : '0.73.1'}\n'
+                '__monkeyssh_agent_runtime_end__\n',
+              );
+            });
+            final service = _unlockedManagementService(_MockDiscovery());
+            final runtime = batched
+                ? (await service.checkForUpdates(
+                    session,
+                  )).singleWhere((runtime) => runtime.definition.id == 'cli:pi')
+                : await service.inspect(session, definition);
+
+            expect(runtime.status, AgentRuntimeStatus.updateAvailable);
+            expect(runtime.hasUpdate, isTrue);
+            expect(runtime.installedVersion, '0.85.0');
+            expect(runtime.latestVersion, '0.85.1');
+            expect(runtime.detectionSource, 'npm global');
+            expect(runtime.managedByPackageManager, isTrue);
+            expect(commands, hasLength(2));
+            expect(commands.last, contains("'$package@'"));
+            expect(commands.last, isNot(contains('@mariozechner/')));
+          },
+        );
+      }
+    }
+  });
+
   group('buildAgentInstallCommand', () {
     test('builds npm install and update commands for POSIX and Windows', () {
       final definition = agentCliRuntimeDefinitions.first;

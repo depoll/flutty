@@ -110,7 +110,7 @@ const agentCliRuntimeDefinitions = <AgentRuntimeDefinition>[
     tool: AgentLaunchTool.pi,
     executableNames: ['pi'],
     registry: AgentPackageRegistry.npm,
-    packageName: '@mariozechner/pi-coding-agent',
+    packageName: '@earendil-works/pi-coding-agent',
     selfUpdateArguments: ['update', '--self'],
   ),
   AgentRuntimeDefinition(
