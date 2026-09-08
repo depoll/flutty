@@ -98,6 +98,10 @@ func (p *unixProcess) Hangup() {
 	signalCommandProcessGroup(p.cmd, syscall.SIGHUP)
 }
 
+func (p *unixProcess) Kill() {
+	killCommandProcessGroup(p.cmd)
+}
+
 // startWindow launches cmd attached to a new pty sized to cols x rows.
 func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) {
 	file, err := pty.StartWithSize(cmd, &pty.Winsize{

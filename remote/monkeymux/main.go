@@ -56,6 +56,9 @@ type muxProcess interface {
 	// Hangup asks the process (group) to terminate, as if the controlling
 	// terminal went away (SIGHUP on POSIX).
 	Hangup()
+	// Kill terminates the process group immediately. The caller must own the
+	// process exclusively and must not call Wait until Kill returns.
+	Kill()
 }
 
 const (
@@ -6323,11 +6326,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		// watchers would join the group after close already waited. Tear the
 		// freshly started process down instead of publishing it.
 		s.mu.Unlock()
-		proc.Hangup()
-		_ = windowPty.Close()
-		// No watcher owns this child. Reap it without blocking rejection on a
-		// process that ignores hangup; Windows Wait also releases its handle.
-		go func() { _ = proc.Wait() }()
+		go cleanupRejectedWindow(windowPty, proc)
 		return nil, errServerClosed
 	}
 	// Registering the watchers here, rather than beside the `go` statements
@@ -6426,6 +6425,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		Windows: snapshots,
 	})
 	return window, nil
+}
+
+// cleanupRejectedWindow exclusively owns a started but unpublished window.
+// There is no useful work to preserve, so force termination immediately rather
+// than leaving a hangup-ignoring child alive. No Wait may run before Kill: on
+// Unix the unreaped leader reserves its PID/PGID throughout group signaling.
+// Keep terminal close and Wait off the rejection path, too.
+func cleanupRejectedWindow(windowPty muxPty, proc muxProcess) {
+	proc.Kill()
+	_ = windowPty.Close()
+	_ = proc.Wait()
 }
 
 func (s *muxServer) readWindow(window *muxWindow) {

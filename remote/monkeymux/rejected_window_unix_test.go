@@ -10,14 +10,28 @@ import (
 )
 
 func TestRejectedWindowReapsStartedProcess(t *testing.T) {
+	for _, command := range []string{"sleep 30", "exit 0"} {
+		t.Run(command, func(t *testing.T) { testRejectedWindowReapsStartedProcess(t, command) })
+	}
+}
+
+func testRejectedWindowReapsStartedProcess(t *testing.T, command string) {
 	before := readProcessTable()
 	if before == nil {
 		t.Fatal("cannot inspect child processes")
 	}
 	server := newMuxServer("rejected-process")
 	server.close()
-	if _, err := server.createWindow(createWindowOptions{args: []string{"/bin/sh", "-c", "sleep 30"}}); !errors.Is(err, errServerClosed) {
-		t.Fatalf("createWindow = %v, want errServerClosed", err)
+	start := time.Now()
+	window, err := server.createWindow(createWindowOptions{args: []string{"/bin/sh", "-c", command}})
+	if !errors.Is(err, errServerClosed) || window != nil {
+		t.Fatalf("createWindow = (%v, %v), want (nil, errServerClosed)", window, err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("rejection blocked for %s", elapsed)
+	}
+	if len(server.windows) != 0 {
+		t.Fatal("rejected window was published")
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -40,12 +54,6 @@ func TestRejectedWindowReapsStartedProcess(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			for _, pid := range children {
-				if process, err := os.FindProcess(pid); err == nil {
-					_ = process.Kill()
-					_, _ = process.Wait()
-				}
-			}
 			t.Fatalf("rejected PTY children were not reaped: %v", children)
 		}
 		time.Sleep(25 * time.Millisecond)
