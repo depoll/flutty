@@ -549,6 +549,34 @@ jobs:
       - name: Cache SQLite native asset
         run: scripts/cache_sqlite3_native_assets.sh ios-arm64
 
+      - name: Identify Apple build caches
+        id: apple-cache-key
+        run: |
+          xcodebuild -version
+          xcode_key=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)
+          echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
+          mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
+
+      # Keep the platform and toolchain separate. Only remote package state is
+      # restored; Flutter regenerates local plugin copies and permission macros.
+      - name: Restore resolved Swift packages
+        id: spm-workspace-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: spm-workspace-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-ios-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Restore Apple compilation cache
+        id: apple-compilation-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ios-compile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-production-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Configure Firebase for iOS
         env:
           FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
@@ -572,14 +600,65 @@ jobs:
           EOF
 
       - name: Build iOS (no codesign)
+        id: apple-build
+        shell: bash
         run: |
-          flutter build ios \
+          export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_CACHING=YES
+          export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES
+          export FLUTTER_XCODE_COMPILATION_CACHE_CAS_PATH="$HOME/Library/Caches/monkeyssh-xcode"
+          flutter build ios --verbose \
             --flavor production \
             --release \
             --no-codesign \
             --no-tree-shake-icons \
             --split-debug-info=.debug-info \
-            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED" \
+            2>&1 | tee "$RUNNER_TEMP/ios-build.log"
+
+      - name: Measure Apple build caches
+        id: apple-cache-sizes
+        run: |
+          compilation_kib=$(du -sk "$HOME/Library/Caches/monkeyssh-xcode" | cut -f1)
+          workspace_kib=0
+          if [ -d build/ios/SourcePackages ]; then
+            workspace_kib=$(du -sk build/ios/SourcePackages | cut -f1)
+          fi
+          echo "Compilation cache: ${compilation_kib} KiB; Swift packages: ${workspace_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          # Bound uncompressed entries; macOS compiles both arm64 and x86_64.
+          if [ "$compilation_kib" -gt 0 ] && [ "$compilation_kib" -le 1048576 ]; then
+            echo "compilation=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$workspace_kib" -gt 0 ] && [ "$workspace_kib" -le 2097152 ]; then
+            echo "workspace=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Save only missing keys. Main's populated entries are shared by PRs,
+      # avoiding a new copy for every source change or warm build.
+      - name: Save Apple compilation cache
+        if: steps.apple-cache-sizes.outputs.compilation == 'true' && steps.apple-compilation-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ${{ steps.apple-compilation-cache.outputs.cache-primary-key }}
+
+      - name: Save resolved Swift packages
+        if: steps.apple-cache-sizes.outputs.workspace == 'true' && steps.spm-workspace-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: ${{ steps.spm-workspace-cache.outputs.cache-primary-key }}
+
+      - name: Upload Apple build diagnostics
+        if: always() && steps.apple-build.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-ios-build-log
+          path: ${{ runner.temp }}/ios-build.log
+          retention-days: 3
 
       - name: Upload iOS build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -665,8 +744,88 @@ jobs:
       - name: Cache SQLite native assets
         run: scripts/cache_sqlite3_native_assets.sh macos-x64 macos-arm64
 
+      - name: Identify Apple build caches
+        id: apple-cache-key
+        run: |
+          xcodebuild -version
+          xcode_key=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)
+          echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
+          mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
+
+      # Keep the platform and toolchain separate. Only remote package state is
+      # restored; Flutter regenerates local plugin copies and permission macros.
+      - name: Restore resolved Swift packages
+        id: spm-workspace-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/macos/SourcePackages/checkouts
+            build/macos/SourcePackages/repositories
+            build/macos/SourcePackages/artifacts
+            build/macos/SourcePackages/workspace-state.json
+          key: spm-workspace-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-macos-${{ hashFiles('pubspec.lock', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Restore Apple compilation cache
+        id: apple-compilation-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: macos-compile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.apple-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-release-${{ hashFiles('pubspec.lock', 'macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Build macOS
-        run: flutter build macos --release --no-tree-shake-icons
+        id: apple-build
+        shell: bash
+        run: |
+          export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_CACHING=YES
+          export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES
+          export FLUTTER_XCODE_COMPILATION_CACHE_CAS_PATH="$HOME/Library/Caches/monkeyssh-xcode"
+          flutter build macos --release --no-tree-shake-icons --verbose \
+            2>&1 | tee "$RUNNER_TEMP/macos-build.log"
+
+      - name: Measure Apple build caches
+        id: apple-cache-sizes
+        run: |
+          compilation_kib=$(du -sk "$HOME/Library/Caches/monkeyssh-xcode" | cut -f1)
+          workspace_kib=0
+          if [ -d build/macos/SourcePackages ]; then
+            workspace_kib=$(du -sk build/macos/SourcePackages | cut -f1)
+          fi
+          echo "Compilation cache: ${compilation_kib} KiB; Swift packages: ${workspace_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          # Bound uncompressed entries; macOS compiles both arm64 and x86_64.
+          if [ "$compilation_kib" -gt 0 ] && [ "$compilation_kib" -le 2097152 ]; then
+            echo "compilation=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "$workspace_kib" -gt 0 ] && [ "$workspace_kib" -le 2097152 ]; then
+            echo "workspace=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Save only missing keys. Main's populated entries are shared by PRs,
+      # avoiding a new copy for every source change or warm build.
+      - name: Save Apple compilation cache
+        if: steps.apple-cache-sizes.outputs.compilation == 'true' && steps.apple-compilation-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ${{ steps.apple-compilation-cache.outputs.cache-primary-key }}
+
+      - name: Save resolved Swift packages
+        if: steps.apple-cache-sizes.outputs.workspace == 'true' && steps.spm-workspace-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/macos/SourcePackages/checkouts
+            build/macos/SourcePackages/repositories
+            build/macos/SourcePackages/artifacts
+            build/macos/SourcePackages/workspace-state.json
+          key: ${{ steps.spm-workspace-cache.outputs.cache-primary-key }}
+
+      - name: Upload Apple build diagnostics
+        if: always() && steps.apple-build.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-macos-build-log
+          path: ${{ runner.temp }}/macos-build.log
+          retention-days: 3
 
       - name: Upload macOS build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

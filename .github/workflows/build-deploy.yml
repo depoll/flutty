@@ -1234,6 +1234,20 @@ jobs:
           echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
           mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
 
+      # This key is shared with CI's iOS job. Leave Flutter's generated local
+      # package copies out, and let normal package resolution validate state.
+      - name: Restore resolved Swift packages
+        id: spm-workspace-cache
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: spm-workspace-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-ios-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       # Store only compiler content-addressed results, not DerivedData or app
       # bundles. Xcode validates compilation inputs, including changed source
       # and flags. Once main has populated a key, PRs restore it without saving
@@ -1289,6 +1303,14 @@ jobs:
           if [ "$cache_kib" -gt 0 ] && [ "$cache_kib" -le 1048576 ]; then
             echo "save=true" >> "$GITHUB_OUTPUT"
           fi
+          workspace_kib=0
+          if [ -d build/ios/SourcePackages ]; then
+            workspace_kib=$(du -sk build/ios/SourcePackages | cut -f1)
+          fi
+          echo "Resolved Swift packages: ${workspace_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$workspace_kib" -gt 0 ] && [ "$workspace_kib" -le 2097152 ]; then
+            echo "workspace=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Save iOS compilation cache
         if: steps.ios-compilation-cache-size.outputs.save == 'true' && steps.ios-compilation-cache.outputs.cache-hit != 'true'
@@ -1296,6 +1318,17 @@ jobs:
         with:
           path: ~/Library/Caches/monkeyssh-xcode
           key: ${{ steps.ios-compilation-cache.outputs.cache-primary-key }}
+
+      - name: Save resolved Swift packages
+        if: steps.ios-compilation-cache-size.outputs.workspace == 'true' && steps.spm-workspace-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: ${{ steps.spm-workspace-cache.outputs.cache-primary-key }}
 
       - name: Upload iOS build diagnostics
         if: always() && steps.ios-compilation-cache-key.outcome == 'success' && steps.ios-build.outcome != 'skipped'
