@@ -188,6 +188,18 @@ class FastfileDeliveryTest < Minitest::Test
     end
   end
 
+  def test_followup_accepts_apples_normalized_marketing_version
+    with_followup(version: '1.2.0') do |path|
+      processed = Struct.new(:app_version, :version).new('1.2', '123')
+      with_stub(FastlaneCore::BuildWatcher, :wait_for_build_processing_to_be_complete, processed) do
+        @harness.finish_testflight(scheme: 'Private', metadata_path: path)
+      end
+      pilot = @harness.calls.assoc(:pilot).last
+      assert_equal '1.2', pilot[:app_version]
+      assert_equal '123', pilot[:build_number]
+    end
+  end
+
   def test_followup_rejects_a_different_processed_build
     with_followup do |path|
       processed = Struct.new(:app_version, :version).new('1.2.3', '124')
@@ -209,13 +221,13 @@ class FastfileDeliveryTest < Minitest::Test
     object.define_singleton_method(name, original)
   end
 
-  def with_followup
+  def with_followup(version: '1.2.3')
     Dir.mktmpdir do |dir|
       path = File.join(dir, 'metadata.json')
-      ENV['FLUTTY_BUILD_NAME'] = '1.2.3'
+      ENV['FLUTTY_BUILD_NAME'] = version
       ENV['BUILD_NUMBER'] = '123'
       File.write(path, JSON.generate(TestflightDelivery.metadata(
-        app_identifier: 'xyz.depollsoft.monkeyssh.private', version: '1.2.3',
+        app_identifier: 'xyz.depollsoft.monkeyssh.private', version: version,
         build_number: '123', changelog: 'Changes', localized_build_info: {},
       )))
       with_stub(Spaceship::ConnectAPI::App, :find, Struct.new(:id).new('app-id')) { yield path }

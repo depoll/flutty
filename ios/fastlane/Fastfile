@@ -632,7 +632,9 @@ platform :ios do
       return_spaceship_testflight_build: false,
       wait_for_build_beta_detail_processing: true,
     )
-    unless processed.app_version == data[:app_version] && processed.version == data[:build_number]
+    # Apple treats 1.2 and 1.2.0 as the same marketing version.
+    unless Gem::Version.new(processed.app_version) == Gem::Version.new(data[:app_version]) &&
+           processed.version == data[:build_number]
       UI.user_error!('App Store Connect returned a different TestFlight build')
     end
     pilot(
@@ -641,7 +643,7 @@ platform :ios do
       distribute_external: false,
       skip_submission: false,
       uses_non_exempt_encryption: false,
-      **data,
+      **data.merge(app_version: processed.app_version),
     )
   end
 
