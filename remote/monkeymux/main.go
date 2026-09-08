@@ -62,7 +62,7 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.188"
+	monkeyMuxVersion                  = "0.1.189"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
@@ -11201,6 +11201,11 @@ func (s *muxServer) storePendingTerminalQueriesLocked(
 // daemon answers this query from the cached theme hint the moment it is emitted,
 // and a window that opted into colour-scheme updates (DEC 2031) is sent a fresh
 // mode report by the attach theme-hint path anyway.
+//
+// Clipboard reads are also dropped. They are requests for user data, not
+// terminal capabilities: replaying a restored agent's startup OSC 52 query can
+// trigger a paste permission prompt merely on attach or window selection. Live
+// queries from the visible window still use the normal forwarding path.
 func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID string) {
 	if conn == nil {
 		return
@@ -11221,7 +11226,7 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 		s.activeID == windowID && s.attachConn == conn &&
 		len(window.pendingTerminalQueriesInFlight) == 0 &&
 		len(window.pendingTerminalQueries) > 0 {
-		pending = dropColorSchemeQueries(window.pendingTerminalQueries)
+		pending = dropStaleTerminalQueries(window.pendingTerminalQueries)
 		window.pendingTerminalQueries = nil
 		window.pendingTerminalQueriesInFlight = append(
 			window.pendingTerminalQueriesInFlight[:0],
@@ -11260,9 +11265,9 @@ func (s *muxServer) flushPendingTerminalQueriesLocked(conn net.Conn, windowID st
 	s.clearPendingTerminalQueriesInFlight(windowID, pending)
 }
 
-// dropColorSchemeQueries returns pending without the colour-scheme queries,
-// preserving the emission order of the queries that remain.
-func dropColorSchemeQueries(pending []byte) []byte {
+// dropStaleTerminalQueries removes colour-scheme and clipboard queries that
+// must not be delivered late, preserving the order of the remaining probes.
+func dropStaleTerminalQueries(pending []byte) []byte {
 	remaining := make([]byte, 0, len(pending))
 	for index := 0; index < len(pending); {
 		sequenceEnd, _, incomplete, recognized := terminalQuerySequenceAt(
@@ -11278,7 +11283,8 @@ func dropColorSchemeQueries(pending []byte) []byte {
 			index++
 			continue
 		}
-		if !isTerminalColorSchemeQuery(pending[index:sequenceEnd]) {
+		sequence := pending[index:sequenceEnd]
+		if !isTerminalColorSchemeQuery(sequence) && !isTerminalClipboardQuery(sequence) {
 			remaining = append(remaining, pending[index:sequenceEnd]...)
 		}
 		index = sequenceEnd
@@ -14194,6 +14200,24 @@ func nextQueryUtf8Remaining(
 		return previousRemaining - leadingPrefix
 	}
 	return trailingUtf8ContinuationCount(data)
+}
+
+func isTerminalClipboardQuery(sequence []byte) bool {
+	payloadStart := 0
+	switch {
+	case bytes.HasPrefix(sequence, []byte("\x1b]52;")):
+		payloadStart = 5
+	case bytes.HasPrefix(sequence, []byte("\x9d52;")):
+		payloadStart = 4
+	default:
+		return false
+	}
+	end, _, ok := findOscTerminator(sequence[payloadStart:])
+	if !ok {
+		return false
+	}
+	_, value, ok := strings.Cut(string(sequence[payloadStart:payloadStart+end]), ";")
+	return ok && value == "?"
 }
 
 func isReplayUnsafeOscNotificationSequence(sequence []byte) bool {

@@ -985,9 +985,9 @@ func TestBufferedColorSchemeQueryDroppedOnFlush(t *testing.T) {
 	}
 }
 
-// TestDropColorSchemeQueries covers the flush-time filter directly, including a
-// buffer that holds nothing else and one whose tail is a partial sequence.
-func TestDropColorSchemeQueries(t *testing.T) {
+// TestDropStaleTerminalQueries covers the flush-time filter, including a buffer
+// that holds nothing else and one whose tail is a partial sequence.
+func TestDropStaleTerminalQueries(t *testing.T) {
 	cases := []struct {
 		name    string
 		pending string
@@ -999,16 +999,86 @@ func TestDropColorSchemeQueries(t *testing.T) {
 			want:    xtversionQuery + da1Query,
 		},
 		{"drops a colour-scheme only buffer", colorSchemeQuery, ""},
+		{"drops a clipboard-only buffer", "\x1b]52;c;?\a", ""},
+		{"drops a clipboard query with ST", "\x1b]52;;?\x1b\\", ""},
+		{"drops a C1 clipboard query", "\x9d52;p;?\x9c", ""},
+		{"preserves a clipboard write", "\x1b]52;c;SGVsbG8=\a", "\x1b]52;c;SGVsbG8=\a"},
+		{"preserves a clipboard clear", "\x1b]52;c;\a", "\x1b]52;c;\a"},
+		{"keeps probes around clipboard reads", xtversionQuery + "\x1b]52;c;?\a" + da1Query, xtversionQuery + da1Query},
 		{"keeps a buffer with no colour-scheme query", da1Query, da1Query},
 		{"preserves a partial trailing sequence", colorSchemeQuery + "\x1b[>", "\x1b[>"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := string(dropColorSchemeQueries([]byte(tc.pending)))
+			got := string(dropStaleTerminalQueries([]byte(tc.pending)))
 			if got != tc.want {
-				t.Fatalf("dropColorSchemeQueries(%q) = %q, want %q", tc.pending, got, tc.want)
+				t.Fatalf("dropStaleTerminalQueries(%q) = %q, want %q", tc.pending, got, tc.want)
 			}
 		})
+	}
+}
+
+// Restored agents can query the clipboard before a terminal attaches. These
+// requests must not trigger paste permission prompts when replayed later.
+func TestBackgroundClipboardQueriesNotDelivered(t *testing.T) {
+	for _, onSwitch := range []bool{false, true} {
+		name := "attach"
+		if onSwitch {
+			name = "window switch"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := newMuxServer("clipboard-restore")
+			window := &muxWindow{id: "@1", index: 0, agentTool: "copilot", lastActivity: time.Now()}
+			server.windows = []*muxWindow{window}
+			server.activeID = "@1"
+			if onSwitch {
+				server.windows = append(server.windows, &muxWindow{id: "@2", index: 1, lastActivity: time.Now()})
+				server.activeID = "@2"
+			}
+			restore := stubForegroundResize(t)
+			defer restore()
+			var attach *recordingConn
+			if onSwitch {
+				attach = &recordingConn{}
+				server.attachConn = attach
+			}
+			// Split reads and both OSC encodings among real capability probes.
+			server.handleWindowOutput("@1", []byte(xtversionQuery+"\x1b]52;c;"))
+			server.handleWindowOutput("@1", []byte("?\a"+"\x9d52;p;?\x1b\\"+da1Query))
+			if onSwitch {
+				if err := server.selectWindow("@1"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var detach func()
+				attach, detach = startCapabilityTestAttach(t, server, controlMessage{Width: 80, Height: 24})
+				defer detach()
+			}
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) && !strings.Contains(attach.String(), da1Query) {
+				time.Sleep(time.Millisecond)
+			}
+			got := attach.String()
+			if strings.Contains(got, "52;") {
+				t.Fatalf("stale clipboard query delivered to terminal: %q", got)
+			}
+			if !strings.Contains(got, xtversionQuery) || !strings.Contains(got, da1Query) {
+				t.Fatalf("capability queries missing from terminal output: %q", got)
+			}
+		})
+	}
+}
+
+func TestLiveClipboardQueryStillDelivered(t *testing.T) {
+	server := newMuxServer("clipboard-live")
+	server.windows = []*muxWindow{{id: "@1", index: 0, lastActivity: time.Now()}}
+	server.activeID = "@1"
+	attach := &recordingConn{}
+	server.attachConn = attach
+	query := "\x1b]52;c;?\a"
+	server.handleWindowOutput("@1", []byte(query))
+	if got := attach.String(); !strings.Contains(got, query) {
+		t.Fatalf("live clipboard query missing from terminal output: %q", got)
 	}
 }
