@@ -729,6 +729,7 @@ TextEditingValue _editingValue(String text, {required int selectionOffset}) =>
 void main() {
   setUpAll(() {
     registerFallbackValue(const SSHPtyConfig());
+    registerFallbackValue(const HostsCompanion());
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(_FakeSshSession());
@@ -9891,6 +9892,48 @@ void main() {
     );
 
     testWidgets(
+      'still reviews an imported resume command before executing it',
+      (tester) async {
+        const resumeCommand = 'copilot --resume saved-session';
+        host = _buildHost(
+          id: host.id,
+          autoConnectCommand: resumeCommand,
+          autoConnectRequiresConfirmation: true,
+        );
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: session.config,
+        );
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(
+          find.text('Review imported auto-connect command'),
+          findsOneWidget,
+        );
+        expect(find.text(resumeCommand), findsOneWidget);
+        expect(shellWrites, isEmpty);
+
+        await tester.tap(find.text('Run once'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(
+          shellWrites.map(utf8.decode).join(),
+          contains('$resumeCommand\r'),
+        );
+        expect(host.autoConnectRequiresConfirmation, isTrue);
+        verifyNever(() => hostRepository.updateFields(any(), any()));
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'prompts before installing MonkeyMux for foreground attach',
       (tester) async {
         final monkeyMuxInstallerService = _PromptingMonkeyMuxInstallerService(
@@ -9986,8 +10029,11 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, hasLength(1));
-        final startupCommand = executedCommands.single;
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        final startupCommand = attachCommands.single;
         expect(startupCommand, contains('/tmp/monkeymux'));
         expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
@@ -10008,6 +10054,7 @@ void main() {
     for (final testCase in const [
       (
         name: 'updates and restores an older MonkeyMux server',
+        importedNeedsReview: false,
         runningVersion: '0.1.13',
         dialogTitle: 'Update running MonkeyMux?',
         confirmLabel: 'Update and restore',
@@ -10022,7 +10069,42 @@ void main() {
         notice: null,
       ),
       (
+        name:
+            'updates and restores without reviewing the generated attach command',
+        importedNeedsReview: true,
+        runningVersion: '0.1.13',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Update and restore',
+        dialogMessage:
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: <String>{},
+        nativeAcpWindowCount: 0,
+        showsUpgradeDecision: true,
+        warningMessage: 'The running helper cannot stop itself cleanly',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.always,
+        notice: null,
+      ),
+      (
+        name:
+            'defers an upgrade without reviewing the generated attach command',
+        importedNeedsReview: true,
+        runningVersion: '0.1.13',
+        dialogTitle: 'Update running MonkeyMux?',
+        confirmLabel: 'Use 0.1.13 for now',
+        dialogMessage:
+            'MonkeySSH will upload helper 0.1.14. It can then restart this '
+            'workspace',
+        capabilities: <String>{},
+        nativeAcpWindowCount: 0,
+        showsUpgradeDecision: true,
+        warningMessage: 'The running helper cannot stop itself cleanly',
+        updatePolicy: MonkeyMuxServerUpdatePolicy.never,
+        notice: null,
+      ),
+      (
         name: 'connects to an older MonkeyMux server when update is deferred',
+        importedNeedsReview: false,
         runningVersion: '0.1.13',
         dialogTitle: 'Update running MonkeyMux?',
         confirmLabel: 'Use 0.1.13 for now',
@@ -10038,6 +10120,7 @@ void main() {
       ),
       (
         name: 'updates and restores while native agents are active',
+        importedNeedsReview: false,
         runningVersion: '0.1.13',
         dialogTitle: 'Update running MonkeyMux?',
         confirmLabel: 'Update and restore',
@@ -10054,6 +10137,7 @@ void main() {
       ),
       (
         name: 'keeps a newer MonkeyMux server without downgrade guidance',
+        importedNeedsReview: false,
         runningVersion: '0.1.15',
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
@@ -10069,6 +10153,7 @@ void main() {
       ),
       (
         name: 'keeps an unknown MonkeyMux server without upgrade guidance',
+        importedNeedsReview: false,
         runningVersion: null,
         dialogTitle: 'Install bundled MonkeyMux helper?',
         confirmLabel: 'Install',
@@ -10118,6 +10203,10 @@ void main() {
           id: host.id,
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
+          autoConnectCommand: testCase.importedNeedsReview
+              ? 'copilot --resume saved-session'
+              : null,
+          autoConnectRequiresConfirmation: testCase.importedNeedsReview,
         );
         final executedCommands = <String>[];
         when(
@@ -10204,6 +10293,12 @@ void main() {
 
         expect(find.text(testCase.dialogTitle), findsNothing);
         expect(find.text('Update running MonkeyMux?'), findsNothing);
+        expect(find.text('Review imported auto-connect command'), findsNothing);
+        expect(
+          host.autoConnectRequiresConfirmation,
+          testCase.importedNeedsReview,
+        );
+        verifyNever(() => hostRepository.updateFields(any(), any()));
         final attachCommands = executedCommands
             .where((command) => command.contains(' attach'))
             .toList(growable: false);
@@ -10339,8 +10434,13 @@ void main() {
 
         expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(monkeyMuxService.installedHelperVersionCalls, 1);
-        expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains('--update-policy never'));
+        // ACP executable discovery can run on a second SSH channel once the
+        // terminal opens. Assert the attach count independently of that probe.
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        expect(attachCommands.single, contains('--update-policy never'));
         expect(find.byType(SnackBar), findsNothing);
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();

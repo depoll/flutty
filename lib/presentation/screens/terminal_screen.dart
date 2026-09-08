@@ -9494,9 +9494,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted || attachCommand == null) {
       return null;
     }
+    // A generated MonkeyMux attach does not execute the host's saved
+    // auto-connect command. Keep its review flag pending until it is used.
+    // Reviewing the attach adds a second prompt after Update and restore;
+    // choosing Always run would also trust a saved command we never showed.
     final review = assessAutoConnectCommandExecution(
       attachCommand.command,
-      importedNeedsReview: host.autoConnectRequiresConfirmation,
+      importedNeedsReview:
+          attachCommand.backend != RemoteMuxBackend.monkeyMux &&
+          host.autoConnectRequiresConfirmation,
     );
     if (review.requiresReview) {
       final decision = await _reviewImportedAutoConnectCommand(review);
