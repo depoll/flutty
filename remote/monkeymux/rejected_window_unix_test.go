@@ -5,8 +5,9 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
+	"syscall"
 	"testing"
-	"time"
 )
 
 func TestRejectedWindowReapsStartedProcess(t *testing.T) {
@@ -16,46 +17,54 @@ func TestRejectedWindowReapsStartedProcess(t *testing.T) {
 }
 
 func testRejectedWindowReapsStartedProcess(t *testing.T, command string) {
-	before := readProcessTable()
-	if before == nil {
-		t.Fatal("cannot inspect child processes")
-	}
 	server := newMuxServer("rejected-process")
-	server.close()
-	start := time.Now()
-	window, err := server.createWindow(createWindowOptions{args: []string{"/bin/sh", "-c", command}})
-	if !errors.Is(err, errServerClosed) || window != nil {
-		t.Fatalf("createWindow = (%v, %v), want (nil, errServerClosed)", window, err)
+	listener := windowStartListener{closed: make(chan struct{})}
+	server.listener = listener
+	created := make(chan struct{})
+	t.Cleanup(func() {
+		awaitWindowStart(t, "create return", created)
+		server.close()
+	})
+	started := newWindowStartGate(t)
+	var cmd *exec.Cmd
+	var windowPty muxPty
+	var startErr, createErr error
+	var window *muxWindow
+	go func() {
+		defer close(created)
+		window, createErr = server.createWindowWithStarter(
+			createWindowOptions{args: []string{"/bin/sh", "-c", command}},
+			func(command *exec.Cmd, cols, rows int) (muxPty, muxProcess, error) {
+				cmd = command
+				var proc muxProcess
+				windowPty, proc, startErr = startWindow(cmd, cols, rows)
+				// Hold a real launch before registration, rather than creating
+				// on an already-closed server, which must never launch now.
+				started.pass()
+				return windowPty, proc, startErr
+			},
+		)
+	}()
+	awaitWindowStart(t, "real process startup", started.entered)
+	if startErr != nil {
+		t.Fatal(startErr)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("rejection blocked for %s", elapsed)
+	closed := closeWindowStartServer(server)
+	awaitWindowStart(t, "shutdown admission closed", listener.closed)
+	assertWindowStartPending(t, "real startup before registration", closed)
+	started.open()
+	awaitWindowStart(t, "request rejection", created)
+	if !errors.Is(createErr, errServerClosed) || window != nil {
+		t.Fatalf("createWindow = (%v, %v), want (nil, errServerClosed)", window, createErr)
+	}
+	awaitWindowStart(t, "shutdown and reap", closed)
+	if !errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
+		t.Error("shutdown returned before the rejected child was reaped")
+	}
+	if _, err := windowPty.(*unixPty).file.Stat(); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("shutdown returned before PTY closure: %v", err)
 	}
 	if len(server.windows) != 0 {
 		t.Fatal("rejected window was published")
-	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		processes := readProcessTable()
-		if processes == nil {
-			t.Fatal("cannot inspect rejected child process")
-		}
-		var children []int
-		for pid, process := range processes {
-			// A PTY child starts its own session. Exclude the ps probe itself
-			// and children belonging to earlier tests.
-			if process.ppid == os.Getpid() && process.pgid == pid {
-				if _, existed := before[pid]; !existed {
-					children = append(children, pid)
-				}
-			}
-		}
-		if len(children) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rejected PTY children were not reaped: %v", children)
-		}
-		time.Sleep(25 * time.Millisecond)
 	}
 }
