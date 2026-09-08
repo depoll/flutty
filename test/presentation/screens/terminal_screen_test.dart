@@ -10029,8 +10029,11 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
-        expect(executedCommands, hasLength(1));
-        final startupCommand = executedCommands.single;
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        final startupCommand = attachCommands.single;
         expect(startupCommand, contains('/tmp/monkeymux'));
         expect(startupCommand, contains(' attach'));
         expect(startupCommand, contains('--update-policy never'));
@@ -10431,8 +10434,13 @@ void main() {
 
         expect(find.text('Update running MonkeyMux?'), findsNothing);
         expect(monkeyMuxService.installedHelperVersionCalls, 1);
-        expect(executedCommands, hasLength(1));
-        expect(executedCommands.single, contains('--update-policy never'));
+        // ACP executable discovery can run on a second SSH channel once the
+        // terminal opens. Assert the attach count independently of that probe.
+        final attachCommands = executedCommands
+            .where((command) => command.contains(' attach'))
+            .toList(growable: false);
+        expect(attachCommands, hasLength(1));
+        expect(attachCommands.single, contains('--update-policy never'));
         expect(find.byType(SnackBar), findsNothing);
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pump();
