@@ -278,6 +278,7 @@ platform :android do
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production/android', __dir__)
 
+    include_media = options[:skip_media].to_s != 'true'
     patch_supply_metadata_only_upload
     upload_to_play_store(
       package_name: package,
@@ -287,8 +288,8 @@ platform :android do
       skip_upload_aab: true,
       skip_upload_metadata: false,
       skip_upload_changelogs: true,
-      skip_upload_images: false,
-      skip_upload_screenshots: false,
+      skip_upload_images: !include_media,
+      skip_upload_screenshots: !include_media,
       changes_not_sent_for_review: true,
     )
     UI.success("Successfully synced metadata for #{package}")

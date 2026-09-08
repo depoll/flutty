@@ -13,6 +13,7 @@ jobs:
     name: Handle /deploy command
     if: github.event.issue.pull_request
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: write
       contents: read

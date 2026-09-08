@@ -2,6 +2,8 @@
 
 require 'minitest/autorun'
 require 'yaml'
+require 'json'
+require 'open3'
 
 # Every job named in `needs:` must exist, and every `needs.<job>` expression a
 # job evaluates must name one of its own declared dependencies. A dangling
@@ -33,10 +35,16 @@ class WorkflowJobGraphTest < Minitest::Test
       File.read(File.join(File.dirname(WORKFLOWS.first), 'ci.yml')), aliases: true
     )
     filter = workflow.fetch('jobs').fetch('changes').fetch('steps').find { |step| step['id'] == 'filter' }
-    line = filter.fetch('run').lines.find { |entry| entry.include?('run_check=$(matches') }
-    pattern = Regexp.new(line.match(/matches '([^']+)'/)[1])
+    assert_equal('python3 scripts/ci_changes.py', filter.fetch('run'))
     %w[pubspec.yaml pubspec.lock].each do |file|
-      assert_match(pattern, "third_party/xterm/#{file}")
+      output, error, status = Open3.capture3(
+        'python3', '-c',
+        'import sys,json; sys.path.insert(0,"scripts"); from ci_changes import classify; print(json.dumps(classify([sys.argv[1]])))',
+        "third_party/xterm/#{file}",
+        chdir: File.expand_path('../..', __dir__),
+      )
+      assert(status.success?, error)
+      assert(JSON.parse(output).fetch('run_check'))
     end
   end
 
@@ -48,7 +56,8 @@ class WorkflowJobGraphTest < Minitest::Test
     assert_match(/^macos-/, terminal.fetch('runs-on'))
     assert_equal("needs.changes.outputs.run_check == 'true'", terminal.fetch('if'))
     step = terminal.fetch('steps').find { |entry| entry['working-directory'] == 'third_party/xterm' }
-    assert_equal("flutter pub get\nflutter test --no-pub\n", step.fetch('run'))
+    assert_includes(step.fetch('run'), 'flutter pub get')
+    assert_includes(step.fetch('run'), 'flutter test --no-pub')
     assert_includes(declared_needs(jobs.fetch('ci')), 'terminal-test')
     gate = jobs.fetch('ci').fetch('steps').find { |entry| entry['name'] == 'Evaluate results' }
     assert_equal('${{ needs.terminal-test.result }}', gate.fetch('env').fetch('TERMINAL_TEST_RESULT'))

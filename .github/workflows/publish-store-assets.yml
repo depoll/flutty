@@ -46,6 +46,7 @@ jobs:
   publish:
     name: Validate & Upload Store Asset Artifacts
     runs-on: macos-latest
+    timeout-minutes: 15
     outputs:
       sync: ${{ steps.inputs.outputs.sync }}
       platform: ${{ steps.inputs.outputs.platform }}
@@ -152,24 +153,27 @@ jobs:
       - name: Upload store-assets archive artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: store-assets
           path: ${{ runner.temp }}/store-assets-artifact/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 30
 
       - name: Upload iOS screenshots artifact
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: store-screenshots-ios
           path: ios/fastlane/screenshots/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload Android screenshots artifact
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'android'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: store-screenshots-android
           path: |
             android/fastlane/metadata-private/android/en-US/images/phoneScreenshots/
@@ -179,24 +183,26 @@ jobs:
             android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots/
             android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload iOS App Previews artifact
         if: steps.inputs.outputs.platform == 'both' || steps.inputs.outputs.platform == 'ios'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: store-app-previews-ios
           path: ios/fastlane/app-previews/
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
       - name: Upload demo videos artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: store-demo-videos
           path: store/demo-videos/
           if-no-files-found: warn
-          retention-days: 90
+          retention-days: 7
 
   sync-metadata:
     name: Sync Store Metadata
@@ -208,6 +214,7 @@ jobs:
       deployments: write
     uses: ./.github/workflows/sync-metadata.yml
     with:
+      use-validated-store-assets: true
       platform: ${{ needs.publish.outputs.platform }}
       app: ${{ needs.publish.outputs.app }}
     secrets: inherit

@@ -3,6 +3,11 @@ name: Build & Deploy
 on:
   workflow_call:
     inputs:
+      monkeymux-assets-artifact-name:
+        required: false
+        type: string
+        default: monkeymux-assets
+        description: Artifact name when independent platform producers share one run
       build-name:
         required: true
         type: string
@@ -244,6 +249,7 @@ jobs:
   validate-build-inputs:
     name: Validate Build Inputs
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       BUILD_FLAVOR: ${{ inputs.flavor }}
       BUILD_NAME: ${{ inputs.build-name }}
@@ -280,7 +286,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
 
       - name: Resolve source SHA
@@ -312,6 +318,24 @@ jobs:
           go-version-file: remote/monkeymux/go.mod
           cache-dependency-path: remote/monkeymux/go.sum
 
+      - name: Fingerprint MonkeyMux inputs
+        id: monkeymux-fingerprint
+        if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
+        run: |
+          if [ -f scripts/verify_monkeymux_assets.py ]; then
+            fingerprint="$(bash scripts/build_monkeymux_assets.sh --print-fingerprint)"
+            echo "value=$fingerprint" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Read only: workflow_run can build PR source under the default-branch
+      # cache scope. CI's trusted push-to-main job is the sole payload writer.
+      - name: Restore MonkeyMux assets
+        if: steps.monkeymux-fingerprint.outputs.value != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: assets/monkeymux/
+          key: monkeymux-assets-v1-${{ runner.os }}-${{ steps.monkeymux-fingerprint.outputs.value }}
+
       - name: Build assets
         if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
         run: |
@@ -327,8 +351,10 @@ jobs:
         if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: monkeymux-assets
+          name: ${{ inputs.monkeymux-assets-artifact-name }}
           path: assets/monkeymux/
+          include-hidden-files: true
+          if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
@@ -337,6 +363,10 @@ jobs:
     needs: [validate-build-inputs, monkeymux-assets]
     if: inputs.build-android
     runs-on: ${{ inputs.android-runner }}
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && format('play-store-{0}', inputs.flavor) || format('android-{0}-{1}-{2}', github.run_id, inputs.deploy-android-to, inputs.monkeymux-assets-artifact-name) }}
+      cancel-in-progress: false
     env:
       BUILD_FLAVOR: ${{ inputs.flavor }}
       BUILD_NAME: ${{ inputs.build-name }}
@@ -347,14 +377,25 @@ jobs:
       FLUTTY_FIREBASE_ENABLED: 'false'
       FLUTTY_SOURCE_BRANCH: ${{ inputs.source-branch }}
     outputs:
+      store-uploaded: ${{ inputs.run-android-deploy && (inputs.deploy-android-to == 'internal' || inputs.deploy-android-to == 'production') && steps.android-deploy.outcome == 'success' }}
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
+
+      - name: Preserve deployment tooling from the workflow commit
+        if: inputs.deploy-android-to != 'none'
+        run: |
+          git archive HEAD \
+            Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
+            android/fastlane/Fastfile android/fastlane/Appfile \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
+            .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
       - name: Capture source SHA
         id: source-sha
@@ -391,11 +432,15 @@ jobs:
           ref: ${{ steps.source-sha.outputs.value }}
           fetch-depth: 1
 
+      - name: Restore deployment tooling from the workflow commit
+        if: inputs.deploy-android-to != 'none'
+        run: tar -xf "$RUNNER_TEMP/deployment-tooling.tar"
+
       - name: Download MonkeyMux assets
         if: inputs.android-reuse-aab-artifact-name == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: monkeymux-assets
+          name: ${{ inputs.monkeymux-assets-artifact-name }}
           path: assets/monkeymux/
 
       - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
@@ -817,16 +862,20 @@ jobs:
         if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.android-reuse-aab-artifact-name == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
+          retention-days: 7
       - name: Upload unsigned AAB artifact
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}${{ inputs.android-target-platform != '' && format('-{0}', inputs.android-target-platform) || '' }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
+          retention-days: 7
       - name: Upload APK artifact
         id: upload-apk
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
@@ -835,6 +884,7 @@ jobs:
           path: build/app/outputs/flutter-apk/android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk
           archive: false
 
+          retention-days: 7
       - name: Fetch PR commits
         if: inputs.pr-number != ''
         continue-on-error: true
@@ -886,40 +936,15 @@ jobs:
         id: start-android-deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
-          DEPLOYMENT_ENVIRONMENT: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-android-to == 'production' && 'Play Production' || 'Play Internal' }}
-          DEPLOYMENT_DESCRIPTION: Android ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || format('Play {0}', inputs.deploy-android-to) }}
-          DEPLOYMENT_PROGRESS_DESCRIPTION: ${{ inputs.deploy-android-to == 'firebase' && 'Android Firebase App Distribution upload started.' || 'Android Play upload started.' }}
-          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
-          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-android-to == 'production' }}
+        uses: ./.github/actions/deployment-status
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
-            const deployment = await github.rest.repos.createDeployment({
-              owner,
-              repo,
-              ref: process.env.DEPLOYMENT_REF,
-              environment: process.env.DEPLOYMENT_ENVIRONMENT,
-              description: process.env.DEPLOYMENT_DESCRIPTION,
-              required_contexts: [],
-              auto_merge: false,
-              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
-            });
-            await github.rest.repos.createDeploymentStatus({
-              owner,
-              repo,
-              deployment_id: deployment.data.id,
-              state: 'in_progress',
-              description: process.env.DEPLOYMENT_PROGRESS_DESCRIPTION,
-              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-              auto_inactive: false,
-              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
-            });
-            core.setOutput('deployment-id', String(deployment.data.id));
+          action: start
+          environment: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-android-to == 'production' && 'Play Production' || 'Play Internal' }}
+          ref: ${{ steps.resolved-source-sha.outputs.value }}
+          state: in_progress
+          description: ${{ inputs.deploy-android-to == 'firebase' && 'Android Firebase App Distribution upload started.' || 'Android Play upload started.' }}
+          production-environment: ${{ inputs.deploy-android-to == 'production' }}
+          environment-url: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
 
       - name: Validate Play Store service account
         if: inputs.deploy-android-to != 'none' && inputs.deploy-android-to != 'firebase' && inputs.run-android-deploy
@@ -1008,27 +1033,14 @@ jobs:
       - name: Finish Android GitHub deployment
         if: always() && inputs.deploy-android-to != 'none' && inputs.run-android-deploy && steps.start-android-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          DEPLOYMENT_ID: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
-          DEPLOYMENT_ENVIRONMENT_URL: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
-          DEPLOYMENT_STATE: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
-          DEPLOYMENT_DESCRIPTION: ${{ inputs.deploy-android-to == 'firebase' && (steps.android-deploy.outcome == 'success' && 'Android Firebase App Distribution upload completed.' || 'Android Firebase App Distribution upload failed.') || (steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.') }}
+        uses: ./.github/actions/deployment-status
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const environmentUrl = process.env.DEPLOYMENT_ENVIRONMENT_URL || '';
-            await github.rest.repos.createDeploymentStatus({
-              owner,
-              repo,
-              deployment_id: Number(process.env.DEPLOYMENT_ID),
-              state: process.env.DEPLOYMENT_STATE,
-              description: process.env.DEPLOYMENT_DESCRIPTION,
-              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
-              ...(environmentUrl ? {environment_url: environmentUrl} : {}),
-            });
+          action: finish
+          environment: Android ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-android-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-android-to == 'production' && 'Play Production' || 'Play Internal' }}
+          deployment-id: ${{ steps.start-android-deployment.outputs['deployment-id'] }}
+          state: ${{ steps.android-deploy.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ inputs.deploy-android-to == 'firebase' && (steps.android-deploy.outcome == 'success' && 'Android Firebase App Distribution upload completed.' || 'Android Firebase App Distribution upload failed.') || (steps.android-deploy.outcome == 'success' && 'Android Play upload completed.' || 'Android Play upload failed.') }}
+          environment-url: ${{ inputs.deploy-android-to == 'production' && 'https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh' || '' }}
 
       - name: Remove Android signing material
         if: always() && inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
@@ -1039,6 +1051,10 @@ jobs:
     needs: [validate-build-inputs, monkeymux-assets]
     if: inputs.build-ios
     runs-on: macos-26
+    timeout-minutes: 30
+    concurrency:
+      group: ${{ inputs.deploy-ios-to == 'firebase' && !inputs.ios-resign-match-readonly && 'ios-profile-maintenance' || (inputs.deploy-ios-to == 'testflight' || inputs.deploy-ios-to == 'appstore') && format('app-store-{0}', inputs.flavor) || format('ios-{0}-{1}-{2}', github.run_id, inputs.deploy-ios-to, inputs.monkeymux-assets-artifact-name) }}
+      cancel-in-progress: false
     env:
       BUILD_FLAVOR: ${{ inputs.flavor }}
       BUILD_NAME: ${{ inputs.build-name }}
@@ -1053,13 +1069,25 @@ jobs:
       FLUTTY_FIREBASE_ENABLED: 'false'
       FLUTTY_SOURCE_BRANCH: ${{ inputs.source-branch }}
     outputs:
+      deployment-id: ${{ steps.start-ios-deployment.outputs.deployment-id }}
+      store-uploaded: ${{ inputs.run-ios-deploy && (inputs.deploy-ios-to == 'testflight' || inputs.deploy-ios-to == 'appstore') && steps.ios-deploy.outcome == 'success' }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
+
+      - name: Preserve deployment tooling from the workflow commit
+        if: inputs.deploy-ios-to != 'none'
+        run: |
+          git archive HEAD \
+            Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
+            android/fastlane/Fastfile android/fastlane/Appfile \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
+            .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
       - name: Capture source SHA
         id: source-sha
@@ -1096,11 +1124,15 @@ jobs:
           ref: ${{ steps.source-sha.outputs.value }}
           fetch-depth: 1
 
+      - name: Restore deployment tooling from the workflow commit
+        if: inputs.deploy-ios-to != 'none'
+        run: tar -xf "$RUNNER_TEMP/deployment-tooling.tar"
+
       - name: Download MonkeyMux assets
         if: inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: monkeymux-assets
+          name: ${{ inputs.monkeymux-assets-artifact-name }}
           path: assets/monkeymux/
 
       # Restore only; CI's push-to-main run is the sole writer in this repository.
@@ -1193,14 +1225,56 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
+      - name: Identify iOS compilation cache
+        id: ios-compilation-cache-key
+        if: inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        run: |
+          xcodebuild -version
+          xcode_key=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)
+          echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
+          mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
+
+      # This key is shared with CI's iOS job. Leave Flutter's generated local
+      # package copies out, and let normal package resolution validate state.
+      - name: Restore resolved Swift packages
+        id: spm-workspace-cache
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: spm-workspace-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-ios-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      # Store only compiler content-addressed results, not DerivedData or app
+      # bundles. Xcode validates compilation inputs, including changed source
+      # and flags. Once main has populated a key, PRs restore it without saving
+      # another copy. A dependency/toolchain change can prime its own PR entry.
+      - name: Restore iOS compilation cache
+        id: ios-compilation-cache
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ios-compile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-${{ inputs.flavor }}-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Build or configure iOS
+        id: ios-build
         if: inputs.ios-reuse-ipa-artifact-name == ''
+        shell: bash
         env:
           DEPLOY_IOS_TO: ${{ inputs.deploy-ios-to }}
         run: |
           EXTRA_FLAGS=()
           if [ "$DEPLOY_IOS_TO" = "none" ]; then
-            EXTRA_FLAGS+=(--no-tree-shake-icons)
+            EXTRA_FLAGS+=(--no-tree-shake-icons --verbose)
+            # Flutter forwards FLUTTER_XCODE_* as xcodebuild settings, including
+            # dependency targets. Keep this out of signed/archive-only jobs.
+            export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_CACHING=YES
+            export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES
+            export FLUTTER_XCODE_COMPILATION_CACHE_CAS_PATH="$HOME/Library/Caches/monkeyssh-xcode"
           else
             # Fastlane archives deploy builds below. Generate its Xcode
             # configuration without compiling the application a second time.
@@ -1216,7 +1290,53 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
-            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED" \
+            2>&1 | tee "$RUNNER_TEMP/ios-build.log"
+
+      - name: Measure iOS compilation cache
+        id: ios-compilation-cache-size
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        run: |
+          cache_kib=$(du -sk "$HOME/Library/Caches/monkeyssh-xcode" | cut -f1)
+          echo "Xcode compilation cache: ${cache_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          # Avoid evicting the shared Flutter SDK caches with oversized entries.
+          if [ "$cache_kib" -gt 0 ] && [ "$cache_kib" -le 1048576 ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+          workspace_kib=0
+          if [ -d build/ios/SourcePackages ]; then
+            workspace_kib=$(du -sk build/ios/SourcePackages | cut -f1)
+          fi
+          echo "Resolved Swift packages: ${workspace_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$workspace_kib" -gt 0 ] && [ "$workspace_kib" -le 2097152 ]; then
+            echo "workspace=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save iOS compilation cache
+        if: steps.ios-compilation-cache-size.outputs.save == 'true' && steps.ios-compilation-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ${{ steps.ios-compilation-cache.outputs.cache-primary-key }}
+
+      - name: Save resolved Swift packages
+        if: steps.ios-compilation-cache-size.outputs.workspace == 'true' && steps.spm-workspace-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            build/ios/SourcePackages/checkouts
+            build/ios/SourcePackages/repositories
+            build/ios/SourcePackages/artifacts
+            build/ios/SourcePackages/workspace-state.json
+          key: ${{ steps.spm-workspace-cache.outputs.cache-primary-key }}
+
+      - name: Upload iOS build diagnostics
+        if: always() && steps.ios-compilation-cache-key.outcome == 'success' && steps.ios-build.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-build-log-${{ inputs.flavor }}-${{ inputs.monkeymux-assets-artifact-name }}
+          path: ${{ runner.temp }}/ios-build.log
+          retention-days: 3
 
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
@@ -1350,37 +1470,14 @@ jobs:
         id: start-ios-deployment
         if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          DEPLOYMENT_REF: ${{ steps.resolved-source-sha.outputs.value }}
-          DEPLOYMENT_ENVIRONMENT: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
-          DEPLOYMENT_DESCRIPTION: iOS ${{ inputs.flavor }} ${{ inputs.build-name }} (${{ inputs.build-number }}) to ${{ inputs.deploy-ios-to }}
-          DEPLOYMENT_PROGRESS_DESCRIPTION: ${{ inputs.deploy-ios-to == 'firebase' && 'iOS Firebase App Distribution upload started.' || 'iOS App Store Connect upload started.' }}
-          DEPLOYMENT_PRODUCTION_ENVIRONMENT: ${{ inputs.deploy-ios-to == 'appstore' }}
+        uses: ./.github/actions/deployment-status
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const deployment = await github.rest.repos.createDeployment({
-              owner,
-              repo,
-              ref: process.env.DEPLOYMENT_REF,
-              environment: process.env.DEPLOYMENT_ENVIRONMENT,
-              description: process.env.DEPLOYMENT_DESCRIPTION,
-              required_contexts: [],
-              auto_merge: false,
-              production_environment: process.env.DEPLOYMENT_PRODUCTION_ENVIRONMENT === 'true',
-            });
-            await github.rest.repos.createDeploymentStatus({
-              owner,
-              repo,
-              deployment_id: deployment.data.id,
-              state: 'in_progress',
-              description: process.env.DEPLOYMENT_PROGRESS_DESCRIPTION,
-              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-              auto_inactive: false,
-            });
-            core.setOutput('deployment-id', String(deployment.data.id));
+          action: start
+          environment: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
+          ref: ${{ steps.resolved-source-sha.outputs.value }}
+          state: in_progress
+          description: ${{ inputs.deploy-ios-to == 'firebase' && 'iOS Firebase App Distribution upload started.' || 'iOS App Store Connect upload started.' }}
+          production-environment: ${{ inputs.deploy-ios-to == 'appstore' }}
 
       - name: Download published store assets
         if: inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && inputs.sync-metadata
@@ -1407,6 +1504,7 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           FIREBASE_TESTER_GROUPS: ${{ inputs.firebase-tester-groups }}
           FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
+          FLUTTY_TESTFLIGHT_METADATA_PATH: ${{ inputs.deploy-ios-to == 'testflight' && format('{0}/testflight-followup.json', runner.temp) || '' }}
           FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
           FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
@@ -1480,27 +1578,26 @@ jobs:
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
 
+      - name: Upload TestFlight follow-up metadata
+        if: inputs.deploy-ios-to == 'testflight' && inputs.run-ios-deploy
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          compression-level: 0
+          name: testflight-followup-${{ inputs.flavor }}-${{ inputs.build-number }}
+          path: ${{ runner.temp }}/testflight-followup.json
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Finish iOS GitHub deployment
         if: always() && inputs.deploy-ios-to != 'none' && inputs.run-ios-deploy && steps.start-ios-deployment.outputs['deployment-id'] != ''
         continue-on-error: true
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          DEPLOYMENT_ID: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
-          DEPLOYMENT_STATE: ${{ steps.ios-deploy.outcome == 'success' && 'success' || 'failure' }}
-          DEPLOYMENT_DESCRIPTION: ${{ inputs.deploy-ios-to == 'firebase' && (steps.ios-deploy.outcome == 'success' && 'iOS Firebase App Distribution upload completed.' || 'iOS Firebase App Distribution upload failed.') || (steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.') }}
+        uses: ./.github/actions/deployment-status
         with:
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            await github.rest.repos.createDeploymentStatus({
-              owner,
-              repo,
-              deployment_id: Number(process.env.DEPLOYMENT_ID),
-              state: process.env.DEPLOYMENT_STATE,
-              description: process.env.DEPLOYMENT_DESCRIPTION,
-              log_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`,
-              auto_inactive: process.env.DEPLOYMENT_STATE === 'success',
-            });
+          action: finish
+          environment: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / ${{ inputs.deploy-ios-to == 'firebase' && 'Firebase App Distribution' || inputs.deploy-ios-to == 'appstore' && 'App Store' || 'TestFlight' }}
+          deployment-id: ${{ steps.start-ios-deployment.outputs['deployment-id'] }}
+          state: ${{ steps.ios-deploy.outcome == 'success' && (inputs.deploy-ios-to == 'testflight' && 'in_progress' || 'success') || 'failure' }}
+          description: ${{ inputs.deploy-ios-to == 'firebase' && (steps.ios-deploy.outcome == 'success' && 'iOS Firebase App Distribution upload completed.' || 'iOS Firebase App Distribution upload failed.') || (steps.ios-deploy.outcome == 'success' && 'iOS App Store Connect upload completed.' || 'iOS App Store Connect upload failed.') }}
 
       - name: Remove Firebase distribution credentials
         if: always() && inputs.deploy-ios-to == 'firebase'
@@ -1535,6 +1632,7 @@ jobs:
           path: ${{ steps.signed-ipa-artifact.outputs.path }}
           archive: false
 
+          retention-days: 7
       - name: Upload unsigned IPA artifact
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1542,11 +1640,57 @@ jobs:
           path: build/ios/ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}-${{ steps.resolved-source-sha.outputs.value }}.ipa
           archive: false
 
+          retention-days: 7
+  finish-testflight:
+    name: Finish TestFlight Distribution
+    needs: build-ios
+    if: ${{ !cancelled() && inputs.build-ios && inputs.deploy-ios-to == 'testflight' && inputs.run-ios-deploy && needs.build-ios.outputs.store-uploaded == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: testflight-followup-${{ inputs.flavor }}-${{ inputs.build-number }}
+          path: build/testflight-followup
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Wait for processing and publish release notes
+        id: finish
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
+          BUILD_NUMBER: ${{ inputs.build-number }}
+          SCHEME: ${{ inputs.flavor == 'private' && 'Private' || 'Production' }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd ios
+          bundle exec fastlane finish_testflight scheme:"$SCHEME" metadata_path:../build/testflight-followup/testflight-followup.json
+
+      - name: Finish TestFlight GitHub deployment
+        if: always() && needs.build-ios.outputs.deployment-id != ''
+        continue-on-error: true
+        uses: ./.github/actions/deployment-status
+        with:
+          action: finish
+          deployment-id: ${{ needs.build-ios.outputs.deployment-id }}
+          environment: iOS ${{ inputs.flavor == 'private' && 'Private' || 'Production' }} / TestFlight
+          state: ${{ steps.finish.outcome == 'success' && 'success' || 'failure' }}
+          description: ${{ steps.finish.outcome == 'success' && 'TestFlight processing and release notes completed.' || 'TestFlight processing or release notes failed.' }}
+
   deploy-status-summary:
     name: Summarize Deploy Status
-    needs: [build-android, build-ios]
+    needs: [build-android, build-ios, finish-testflight]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       android-deploy-status: ${{ steps.summary.outputs.android-deploy-status }}
       ios-deploy-status: ${{ steps.summary.outputs.ios-deploy-status }}
@@ -1561,7 +1705,7 @@ jobs:
           ANDROID_TARGET: ${{ inputs.deploy-android-to }}
           IOS_TARGET: ${{ inputs.deploy-ios-to }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
-          IOS_RESULT: ${{ needs.build-ios.result }}
+          IOS_RESULT: ${{ inputs.deploy-ios-to == 'testflight' && inputs.run-ios-deploy && needs.build-ios.result == 'success' && needs.finish-testflight.result || needs.build-ios.result }}
         run: |
           android_status=''
           if [ "$BUILD_ANDROID_ENABLED" = 'true' ] && [ "$ANDROID_TARGET" != 'none' ]; then
@@ -1627,6 +1771,7 @@ jobs:
     needs: [build-android]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.run-android-deploy && inputs.deploy-android-to != 'none'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Update Android status row
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1686,9 +1831,10 @@ jobs:
 
   update-ios-deploy-comment:
     name: Update iOS Deploy Comment
-    needs: [build-ios]
+    needs: [build-ios, finish-testflight]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.run-ios-deploy && inputs.deploy-ios-to != 'none'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Update iOS status row
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -1699,7 +1845,7 @@ jobs:
             const issueNumber = Number('${{ inputs.pr-number }}');
             const statusMarker = '<!-- preview-deploy-status -->';
             const iosTarget = '${{ inputs.deploy-ios-to }}';
-            const iosResult = '${{ needs.build-ios.result }}';
+            const iosResult = '${{ inputs.deploy-ios-to == 'testflight' && inputs.run-ios-deploy && needs.build-ios.result == 'success' && needs.finish-testflight.result || needs.build-ios.result }}';
 
             let iosStatus = '❌ iOS deploy failed';
             if (iosResult === 'success') {
@@ -1746,15 +1892,14 @@ jobs:
               body: updatedBody,
             });
 
-  # Firebase App Distribution deploys are excluded on purpose: this marker
-  # tracks the latest TestFlight/Play private build number so /deploy knows
-  # when preview intermediates are still ahead of the deployed build, and
-  # every-push firebase distributions would keep bumping it.
+  # Reserve uploaded store build numbers even if another platform or Apple's
+  # later processing fails. Firebase uploads do not consume store versions.
   record-private-deploy-build-number:
     name: Record Private Deploy Build Number
     needs: [build-android, build-ios]
-    if: inputs.flavor == 'private' && (inputs.deploy-ios-to == 'testflight' || inputs.deploy-ios-to == 'appstore' || inputs.deploy-android-to == 'internal' || inputs.deploy-android-to == 'production') && needs.build-android.result == 'success' && needs.build-ios.result == 'success'
+    if: always() && inputs.flavor == 'private' && (needs.build-android.outputs.store-uploaded == 'true' || needs.build-ios.outputs.store-uploaded == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Write private deploy build marker
         env:
@@ -1766,5 +1911,7 @@ jobs:
       - name: Upload private deploy build marker
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: private-deploy-build-number-${{ inputs.build-number }}
+          compression-level: 0
+          name: private-deploy-build-number-${{ inputs.build-number }}-${{ needs.build-android.outputs.store-uploaded == 'true' && 'android' || 'ios' }}
           path: build/private-deploy-marker/build-number.txt
+          retention-days: 30

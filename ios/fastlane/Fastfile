@@ -4,10 +4,12 @@ require 'fileutils'
 require 'shellwords'
 require 'tmpdir'
 require_relative '../../scripts/preview_release_notes'
+require_relative '../../scripts/store_metadata'
+require_relative '../../scripts/testflight_delivery'
 
 platform :ios do
   before_all do
-    setup_ci if ENV['CI']
+    setup_ci if ENV['CI'] && RUBY_PLATFORM.include?('darwin')
   end
 
   APP_IDS = {
@@ -208,7 +210,7 @@ platform :ios do
       # before a tester registered their device cannot install on it. Let match
       # regenerate when the device count changes; App Store profiles have no
       # device list and ignore this.
-      force_for_new_devices: match_type == 'adhoc',
+      force_for_new_devices: match_type == 'adhoc' && !readonly,
     )
   end
 
@@ -223,7 +225,7 @@ platform :ios do
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
       type: match_type,
-      readonly: false,
+      readonly: match_type == 'appstore',
     )
 
     profile_name = ENV["sigh_#{app_id}_#{match_type}_profile-name"] ||
@@ -467,7 +469,7 @@ platform :ios do
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
       type: match_type,
-      readonly: match_readonly,
+      readonly: match_type == 'appstore' || match_readonly,
       force_for_new_devices: match_type == 'adhoc' && !match_readonly,
     )
 
@@ -567,6 +569,27 @@ platform :ios do
 
     build_and_sign(scheme: scheme) if provided_ipa_path.empty?
 
+    followup_path = ENV['FLUTTY_TESTFLIGHT_METADATA_PATH'].to_s
+    unless followup_path.empty?
+      FileUtils.mkdir_p(File.dirname(followup_path))
+      File.write(followup_path, JSON.generate(TestflightDelivery.metadata(
+        app_identifier: app_id,
+        version: ENV.fetch('FLUTTY_BUILD_NAME'),
+        build_number: ENV.fetch('BUILD_NUMBER'),
+        changelog: changelog,
+        localized_build_info: localized_build_info,
+      )))
+      pilot(
+        api_key: get_api_key,
+        app_identifier: app_id,
+        ipa: resolved_ipa_path(ipa_path: provided_ipa_path),
+        uses_non_exempt_encryption: false,
+        **TestflightDelivery.upload_options,
+      )
+      sync_metadata(app_identifier: app_id, app_version: ENV['FLUTTY_BUILD_NAME']) unless skip_meta
+      next
+    end
+
     pilot(
       api_key: get_api_key,
       app_identifier: app_id,
@@ -583,6 +606,45 @@ platform :ios do
       app_identifier: app_id,
       app_version: ENV['FLUTTY_BUILD_NAME'],
     ) unless skip_meta
+  end
+
+  desc 'Wait for an uploaded build and finish TestFlight distribution without Xcode'
+  lane :finish_testflight do |options|
+    scheme = options[:scheme] || 'Private'
+    data = TestflightDelivery.read(
+      options.fetch(:metadata_path),
+      app_identifier: APP_IDS.fetch(scheme),
+      version: ENV.fetch('FLUTTY_BUILD_NAME'),
+      build_number: ENV.fetch('BUILD_NUMBER'),
+    )
+    api_key = get_api_key
+    app = Spaceship::ConnectAPI::App.find(data.fetch(:app_identifier))
+    UI.user_error!('TestFlight application was not found') unless app
+    require 'fastlane_core/build_watcher'
+    processed = FastlaneCore::BuildWatcher.wait_for_build_processing_to_be_complete(
+      app_id: app.id,
+      platform: 'IOS',
+      app_version: data.fetch(:app_version),
+      build_version: data.fetch(:build_number),
+      poll_interval: 30,
+      timeout_duration: 1200,
+      select_latest: false,
+      return_spaceship_testflight_build: false,
+      wait_for_build_beta_detail_processing: true,
+    )
+    # Apple treats 1.2 and 1.2.0 as the same marketing version.
+    unless Gem::Version.new(processed.app_version) == Gem::Version.new(data[:app_version]) &&
+           processed.version == data[:build_number]
+      UI.user_error!('App Store Connect returned a different TestFlight build')
+    end
+    pilot(
+      api_key: api_key,
+      distribute_only: true,
+      distribute_external: false,
+      skip_submission: false,
+      uses_non_exempt_encryption: false,
+      **data.merge(app_version: processed.app_version),
+    )
   end
 
   desc 'Build, sign with ad hoc profiles, and upload to Firebase App Distribution'
@@ -658,6 +720,13 @@ platform :ios do
   end
 
   desc 'Upload metadata, screenshots, previews, and an optional build'
+  lane :check_metadata_editable do |options|
+    patch_app_store_ready_for_review_lookup
+    get_api_key
+    app = Spaceship::ConnectAPI::App.find(options[:app_identifier])
+    StoreMetadata.editable_version!(app, requested_version: options[:app_version])
+  end
+
   lane :sync_metadata do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
     app_version = options[:app_version].to_s
@@ -665,6 +734,9 @@ platform :ios do
     submit_for_review = options[:submit_for_review].to_s == 'true'
     automatic_release = options[:automatic_release].to_s == 'true'
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
+
+    app_version = check_metadata_editable(app_identifier: app_id, app_version: app_version)
+    include_media = StoreMetadata.include_media?(options)
 
     patch_app_store_ready_for_review_lookup
     patch_deliver_review_attachment_fetch
@@ -683,13 +755,13 @@ platform :ios do
       metadata_path: meta_path,
       screenshots_path: SCREENSHOTS_PATH,
       skip_binary_upload: ipa_path.empty?,
-      skip_screenshots: false,
+      skip_screenshots: !include_media,
       # Clear previously uploaded screenshots and app previews before
       # uploading the current set. Without this, deliver *appends* the new
       # screenshots to whatever is already on App Store Connect, so each sync
       # leaves stale screenshots from older versions behind and the listing
       # ends up with duplicates from different versions.
-      overwrite_screenshots: true,
+      overwrite_screenshots: include_media,
       submit_for_review: submit_for_review,
       run_precheck_before_submit: false,
       automatic_release: automatic_release,
@@ -703,7 +775,7 @@ platform :ios do
     unless review_contact_information.empty?
       deliver_options[:app_review_information] = review_contact_information
     end
-    if Dir.glob(File.join(APP_PREVIEWS_PATH, '**', '*.{mov,mp4,m4v}')).any?
+    if include_media && Dir.glob(File.join(APP_PREVIEWS_PATH, '**', '*.{mov,mp4,m4v}')).any?
       deliver_options[:app_previews_path] = APP_PREVIEWS_PATH
       deliver_options[:overwrite_preview_videos] = true
     end
