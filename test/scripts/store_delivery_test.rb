@@ -195,6 +195,7 @@ class FastfileDeliveryTest < Minitest::Test
       end
       pilot = @harness.calls.assoc(:pilot).last
       assert pilot[:distribute_only]
+      assert_equal 'ios', pilot[:app_platform]
       refute pilot[:distribute_external]
       assert_equal '123', pilot[:build_number]
       assert_equal 'Changes', pilot[:changelog]
