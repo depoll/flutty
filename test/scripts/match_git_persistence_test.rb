@@ -15,7 +15,8 @@ class MatchGitPersistenceTest < Minitest::Test
     git('config', 'user.name', 'Test')
     git('config', 'user.email', 'test@example.com')
     File.write(File.join(@checkout, 'profile'), 'original')
-    git('add', 'profile')
+    File.write(File.join(@checkout, 'unrelated-profile'), 'original salt')
+    git('add', 'profile', 'unrelated-profile')
     git('commit', '-m', 'Initial profile')
     git('push', 'origin', 'master')
   end
@@ -27,7 +28,7 @@ class MatchGitPersistenceTest < Minitest::Test
   def test_successful_push_is_accepted
     update_profile
     git('push', 'origin', 'master')
-    MatchGitPersistence.verify!(@checkout, 'master')
+    MatchGitPersistence.verify!(@checkout, 'master', ['profile'])
   end
 
   def test_rejected_push_is_reported_even_if_fastlane_swallows_the_error
@@ -37,13 +38,27 @@ class MatchGitPersistenceTest < Minitest::Test
     update_profile
     _, result = Open3.capture2e('git', 'push', 'origin', 'master', chdir: @checkout)
     refute result.success?
-    error = assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master') }
+    error = assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master', ['profile']) }
     assert_match(/not persisted/, error.message)
   end
 
   def test_uncommitted_profile_is_rejected
     File.write(File.join(@checkout, 'profile'), 'uncommitted')
-    assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master') }
+    assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master', ['profile']) }
+  end
+
+  def test_reencrypted_unrelated_profiles_do_not_fail_successful_uploads
+    File.write(File.join(@checkout, 'unrelated-profile'), 'different random salt')
+    update_profile
+    git('push', 'origin', 'master')
+    MatchGitPersistence.verify!(@checkout, 'master', ['profile'])
+  end
+
+  def test_untracked_upload_and_uncommitted_index_are_rejected
+    File.write(File.join(@checkout, 'new-profile'), 'new')
+    assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master', ['new-profile']) }
+    git('add', 'new-profile')
+    assert_raises(RuntimeError) { MatchGitPersistence.verify!(@checkout, 'master', ['profile']) }
   end
 
   private
