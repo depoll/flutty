@@ -55,7 +55,7 @@ class MonkeyMuxCacheTest(unittest.TestCase):
         go = bindir / 'go'
         go.write_text('#!/bin/sh\necho "compile requested" >&2\nexit 42\n')
         go.chmod(0o755)
-        self.env = {**os.environ, 'PATH': f'{bindir}{os.pathsep}{os.environ["PATH"]}'}
+        self.env = {**os.environ, 'PATH': f'{bindir}{os.pathsep}{os.environ.get("PATH", os.defpath)}'}
 
     def builder(self, *args):
         return subprocess.run(['bash', str(self.root / 'scripts/build_monkeymux_assets.sh'), *args],

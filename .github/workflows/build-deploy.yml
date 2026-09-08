@@ -1912,6 +1912,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           compression-level: 0
-          name: private-deploy-build-number-${{ inputs.build-number }}-${{ inputs.build-android && 'android' || 'ios' }}
+          name: private-deploy-build-number-${{ inputs.build-number }}-${{ needs.build-android.outputs.store-uploaded == 'true' && 'android' || 'ios' }}
           path: build/private-deploy-marker/build-number.txt
           retention-days: 30

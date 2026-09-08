@@ -400,7 +400,7 @@ jobs:
           script: |
             let artifact = null;
             if (process.env.REBUILD_REQUIRED !== 'true') {
-              const {resolve} = require('./scripts/resolve_preview_artifact.cjs');
+              const {resolve} = require(require('path').join(process.env.GITHUB_WORKSPACE, 'scripts/resolve_preview_artifact.cjs'));
               artifact = await resolve({
                 github, ...context.repo, sha: process.env.DEPLOY_SHA,
                 buildName: process.env.BUILD_NAME, buildNumber: process.env.BUILD_NUMBER,
