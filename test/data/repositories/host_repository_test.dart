@@ -497,6 +497,30 @@ void main() {
       expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
+    test(
+      'duplicate assigns a new proxy name instead of copying the alias',
+      () async {
+        final id = await repository.insert(
+          HostsCompanion.insert(
+            label: 'Production',
+            hostname: 'example.com',
+            username: 'deploy',
+            portProxyName: const Value('prod'),
+          ),
+        );
+        final source = (await repository.getById(id))!;
+        final copyId = await repository.duplicate(source);
+        final copy = (await repository.getById(copyId))!;
+
+        expect(copy.portProxyName, isNull);
+        expect((await repository.getById(id))!.portProxyName, 'prod');
+        expect(
+          await repository.resolveProxyName(hostId: copyId, label: copy.label),
+          'production-c',
+        );
+      },
+    );
+
     test('duplicate copies all host configuration and port forwards', () async {
       final keyId = await db
           .into(db.sshKeys)
@@ -920,6 +944,23 @@ void main() {
     test('delete returns 0 when host not exists', () async {
       final deleted = await repository.delete(999);
       expect(deleted, 0);
+    });
+
+    test('concurrent favorite toggles each take effect', () async {
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Server',
+          hostname: 'example.com',
+          username: 'user',
+        ),
+      );
+      expect(
+        await Future.wait(
+          List.generate(10, (_) => repository.toggleFavorite(id)),
+        ),
+        everyElement(isTrue),
+      );
+      expect((await repository.getById(id))!.isFavorite, isFalse);
     });
 
     test('toggleFavorite toggles favorite status', () async {
