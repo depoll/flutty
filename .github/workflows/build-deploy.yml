@@ -1225,14 +1225,42 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
+      - name: Identify iOS compilation cache
+        id: ios-compilation-cache-key
+        if: inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        run: |
+          xcodebuild -version
+          xcode_key=$(xcodebuild -version | shasum -a 256 | cut -d ' ' -f1)
+          echo "xcode=$xcode_key" >> "$GITHUB_OUTPUT"
+          mkdir -p "$HOME/Library/Caches/monkeyssh-xcode"
+
+      # Store only compiler content-addressed results, not DerivedData or app
+      # bundles. Xcode validates compilation inputs, including changed source
+      # and flags. Once main has populated a key, PRs restore it without saving
+      # another copy. A dependency/toolchain change can prime its own PR entry.
+      - name: Restore iOS compilation cache
+        id: ios-compilation-cache
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ios-compile-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-compilation-cache-key.outputs.xcode }}-${{ env.FLUTTER_VERSION }}-${{ inputs.flavor }}-${{ hashFiles('pubspec.lock', 'ios/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
       - name: Build or configure iOS
+        id: ios-build
         if: inputs.ios-reuse-ipa-artifact-name == ''
+        shell: bash
         env:
           DEPLOY_IOS_TO: ${{ inputs.deploy-ios-to }}
         run: |
           EXTRA_FLAGS=()
           if [ "$DEPLOY_IOS_TO" = "none" ]; then
-            EXTRA_FLAGS+=(--no-tree-shake-icons)
+            EXTRA_FLAGS+=(--no-tree-shake-icons --verbose)
+            # Flutter forwards FLUTTER_XCODE_* as xcodebuild settings, including
+            # dependency targets. Keep this out of signed/archive-only jobs.
+            export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_CACHING=YES
+            export FLUTTER_XCODE_COMPILATION_CACHE_ENABLE_DIAGNOSTIC_REMARKS=YES
+            export FLUTTER_XCODE_COMPILATION_CACHE_CAS_PATH="$HOME/Library/Caches/monkeyssh-xcode"
           else
             # Fastlane archives deploy builds below. Generate its Xcode
             # configuration without compiling the application a second time.
@@ -1248,7 +1276,34 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED" \
-            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED"
+            --dart-define=FLUTTY_FIREBASE_ENABLED="$FLUTTY_FIREBASE_ENABLED" \
+            2>&1 | tee "$RUNNER_TEMP/ios-build.log"
+
+      - name: Measure iOS compilation cache
+        id: ios-compilation-cache-size
+        if: steps.ios-compilation-cache-key.outcome == 'success'
+        run: |
+          cache_kib=$(du -sk "$HOME/Library/Caches/monkeyssh-xcode" | cut -f1)
+          echo "Xcode compilation cache: ${cache_kib} KiB" >> "$GITHUB_STEP_SUMMARY"
+          # Avoid evicting the shared Flutter SDK caches with oversized entries.
+          if [ "$cache_kib" -gt 0 ] && [ "$cache_kib" -le 1048576 ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save iOS compilation cache
+        if: steps.ios-compilation-cache-size.outputs.save == 'true' && steps.ios-compilation-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/Library/Caches/monkeyssh-xcode
+          key: ${{ steps.ios-compilation-cache.outputs.cache-primary-key }}
+
+      - name: Upload iOS build diagnostics
+        if: always() && steps.ios-compilation-cache-key.outcome == 'success' && steps.ios-build.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-build-log-${{ inputs.flavor }}-${{ inputs.monkeymux-assets-artifact-name }}
+          path: ${{ runner.temp }}/ios-build.log
+          retention-days: 3
 
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
