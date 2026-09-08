@@ -197,6 +197,8 @@ on:
         required: false
       MATCH_GIT_BASIC_AUTHORIZATION:
         required: false
+      MATCH_GIT_WRITE_BASIC_AUTHORIZATION:
+        required: false
       APP_STORE_CONNECT_API_KEY_ID:
         required: false
       APP_STORE_CONNECT_API_ISSUER_ID:
@@ -393,7 +395,7 @@ jobs:
           git archive HEAD \
             Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
             android/fastlane/Fastfile android/fastlane/Appfile \
-            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb scripts/match_git_persistence.rb \
             scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
             .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
@@ -1085,7 +1087,7 @@ jobs:
           git archive HEAD \
             Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
             android/fastlane/Fastfile android/fastlane/Appfile \
-            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb scripts/match_git_persistence.rb \
             scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
             .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
@@ -1492,6 +1494,7 @@ jobs:
         if: inputs.deploy-ios-to != 'none'
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_WRITE_BASIC_AUTHORIZATION: ${{ inputs.deploy-ios-to == 'firebase' && !inputs.ios-resign-match-readonly && secrets.MATCH_GIT_WRITE_BASIC_AUTHORIZATION || '' }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -1672,7 +1675,7 @@ jobs:
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
-          bundle exec fastlane finish_testflight scheme:"$SCHEME" metadata_path:../build/testflight-followup/testflight-followup.json
+          bundle exec fastlane finish_testflight scheme:"$SCHEME" metadata_path:"$GITHUB_WORKSPACE/build/testflight-followup/testflight-followup.json"
 
       - name: Finish TestFlight GitHub deployment
         if: always() && needs.build-ios.outputs.deployment-id != ''

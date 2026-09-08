@@ -191,6 +191,7 @@ jobs:
           python3 -m unittest discover -s test/scripts -p 'deployment_ci_test.py'
           node --test test/scripts/resolve_preview_artifact_test.cjs
           ruby test/scripts/store_delivery_test.rb
+          ruby test/scripts/match_git_persistence_test.rb
 
       - name: Test release-note metadata
         run: ruby test/scripts/preview_release_notes_test.rb

@@ -84,6 +84,7 @@ class FastfileHarness
     file = File.expand_path('../../ios/fastlane/Fastfile', __dir__)
     instance_eval(File.read(file), file)
     @lanes[:get_api_key] = proc { {} }
+    @lanes[:check_match_persistence] = proc {}
     @lanes[:testflight_release_notes] = proc { ['Changes', {'en-US': {whats_new: 'Changes'}}] }
     @lanes[:resolved_ipa_path] = proc { |options| options.fetch(:ipa_path) }
     @lanes[:sync_metadata] = proc { |options| @calls << [:sync_metadata, options] }
@@ -164,6 +165,18 @@ class FastfileDeliveryTest < Minitest::Test
     assert @harness.calls.assoc(:match).last[:force_for_new_devices]
   end
 
+  def test_only_writable_signing_receives_the_repository_write_credential
+    ENV['MATCH_GIT_WRITE_BASIC_AUTHORIZATION'] = 'test-write-authorization'
+    @harness.sync_certs(app_identifier: ['app'], type: 'adhoc', readonly: false)
+    options = @harness.calls.assoc(:match).last
+    assert_equal 'test-write-authorization', options[:git_basic_authorization]
+
+    @harness.calls.clear
+    @harness.sync_certs(app_identifier: ['app'], type: 'adhoc', readonly: true)
+    options = @harness.calls.assoc(:match).last
+    refute options.key?(:git_basic_authorization)
+  end
+
   def test_followup_waits_for_and_updates_only_the_requested_build
     with_followup do |path|
       processed = Struct.new(:app_version, :version).new('1.2.3', '123')
@@ -182,6 +195,7 @@ class FastfileDeliveryTest < Minitest::Test
       end
       pilot = @harness.calls.assoc(:pilot).last
       assert pilot[:distribute_only]
+      assert_equal 'ios', pilot[:app_platform]
       refute pilot[:distribute_external]
       assert_equal '123', pilot[:build_number]
       assert_equal 'Changes', pilot[:changelog]

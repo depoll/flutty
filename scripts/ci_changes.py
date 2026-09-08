@@ -34,6 +34,7 @@ MOBILE_PATHS = [
     'scripts/preview_release_notes.rb',
     'scripts/preview_build_number.py',
     'scripts/store_metadata.rb',
+    'scripts/match_git_persistence.rb',
     'scripts/testflight_delivery.rb',
     'Gemfile',
     'Gemfile.lock',
