@@ -52,7 +52,13 @@ jobs:
               {owner, repo, run_id: workflowRun.id, per_page: 100},
             );
             const activeArtifacts = artifacts.filter((artifact) => !artifact.expired);
-            const sourceWorkflow = workflowRun.name;
+            // run-name can replace workflow_run.name with a per-build title.
+            // Resolve the stable workflow name by ID before selecting a platform.
+            const {data: producerWorkflow} = await github.rest.actions.getWorkflow({
+              owner, repo, workflow_id: workflowRun.workflow_id,
+              request: {timeout: 10_000},
+            });
+            const sourceWorkflow = producerWorkflow.name;
             let platform;
             let sourceSha;
             let buildName;

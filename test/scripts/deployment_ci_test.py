@@ -114,6 +114,13 @@ class DeploymentContractsTest(unittest.TestCase):
                              ['${{ github.sha }}', '${{ github.event.pull_request.head.sha }}'])
         self.assertIn('github.event.pull_request.updated_at', self.workflows['preview-ios.yml']['run-name'])
 
+    def test_distribution_uses_workflow_identity_instead_of_custom_run_title(self):
+        jobs = self.workflows['firebase-distribution.yml']['jobs']
+        script = jobs['resolve-preview']['steps'][0]['with']['script']
+        self.assertIn('github.rest.actions.getWorkflow', script)
+        self.assertIn('workflow_id: workflowRun.workflow_id', script)
+        self.assertIn('const sourceWorkflow = producerWorkflow.name', script)
+
     def test_processing_leaves_mac_but_remains_part_of_final_status(self):
         jobs = self.workflows['build-deploy.yml']['jobs']
         followup = jobs['finish-testflight']
