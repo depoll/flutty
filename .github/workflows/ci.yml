@@ -187,6 +187,12 @@ jobs:
       - name: Test MonkeyMux cache validation and invalidation
         run: python3 -m unittest discover -s test/scripts -p 'monkeymux_cache_test.py'
 
+      - name: Test deployment orchestration
+        run: |
+          python3 -m unittest discover -s test/scripts -p 'deployment_ci_test.py'
+          node --test test/scripts/resolve_preview_artifact_test.cjs
+          ruby test/scripts/store_delivery_test.rb
+
       - name: Test release-note metadata
         run: ruby test/scripts/preview_release_notes_test.rb
 
@@ -249,7 +255,21 @@ jobs:
         run: scripts/cache_sqlite3_native_assets.sh linux-x64
 
       - name: Run tests
-        run: flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }}
+        run: |
+          set -o pipefail
+          flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }} 2>&1 | tee "$RUNNER_TEMP/flutter-test.log"
+
+      - name: Upload failed test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          compression-level: 0
+          name: flutter-test-failures-${{ matrix.shard-index }}
+          path: |
+            ${{ runner.temp }}/flutter-test.log
+            **/failures/**
+          if-no-files-found: ignore
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # MonkeyMux helper (Go) — a standalone module under remote/monkeymux that is
@@ -619,18 +639,7 @@ jobs:
         run: scripts/cache_sqlite3_native_assets.sh macos-x64 macos-arm64
 
       - name: Build macOS
-        run: |
-          for attempt in 1 2 3; do
-            if flutter build macos --release --no-tree-shake-icons; then
-              exit 0
-            fi
-
-            if [ "$attempt" -eq 3 ]; then
-              exit 1
-            fi
-
-            sleep $((attempt * 10))
-          done
+        run: flutter build macos --release --no-tree-shake-icons
 
       - name: Upload macOS build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

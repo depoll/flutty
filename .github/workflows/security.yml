@@ -21,6 +21,7 @@ jobs:
     name: Dependency Review
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubicloud-standard-4
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,6 +55,9 @@ jobs:
               case "${path}" in
                 Gemfile|Gemfile.lock)
                   printf '%s\n' 'scan:Gemfile.lock'
+                  ;;
+                remote/monkeymux/go.mod|remote/monkeymux/go.sum)
+                  printf '%s\n' 'scan:remote/monkeymux/go.mod'
                   ;;
                 pubspec.yaml|pubspec.lock)
                   printf '%s\n' 'scan:pubspec.lock'
@@ -247,13 +251,14 @@ jobs:
   secret-scan:
     name: Secret Scan
     runs-on: ubicloud-standard-4
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
           persist-credentials: false
 
       - name: Select Gitleaks scan scope
@@ -348,9 +353,11 @@ jobs:
         if: always() && hashFiles('gitleaks.sarif') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: gitleaks-results-${{ github.run_id }}
           path: gitleaks.sarif
 
+          retention-days: 7
       - name: Summarize Gitleaks findings
         if: always()
         run: |
@@ -368,6 +375,7 @@ jobs:
     name: OSV Dependency Scan
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
@@ -375,7 +383,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Run OSV scanner
@@ -400,9 +408,11 @@ jobs:
         if: always() && hashFiles('results.sarif') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: osv-results-${{ github.run_id }}
           path: results.sarif
 
+          retention-days: 7
       - name: Summarize OSV findings
         if: always()
         run: |

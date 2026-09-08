@@ -22,6 +22,9 @@ on:
       - 'scripts/cache_sqlite3_native_assets.sh'
       - 'scripts/version_codename.py'
       - 'scripts/preview_release_notes.rb'
+      - 'scripts/preview_build_number.py'
+      - 'scripts/store_metadata.rb'
+      - 'scripts/testflight_delivery.rb'
       - 'Gemfile'
       - 'Gemfile.lock'
       - '.github/workflows/build-deploy.yml'
@@ -42,7 +45,9 @@ permissions:
 jobs:
   compute-version:
     name: Compute Version
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
@@ -59,7 +64,7 @@ jobs:
         id: version
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          BUILD_NUMBER=$(python3 scripts/preview_build_number.py)
           BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
           BUILD_DISPLAY="$BASE_VERSION"
           if [ -n "$BUILD_CODENAME" ]; then
@@ -87,6 +92,7 @@ jobs:
       - name: Upload version metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
+          compression-level: 0
           name: preview-version-metadata
           path: preview-metadata/version.json
           retention-days: 1
@@ -131,6 +137,7 @@ jobs:
   comment-initial:
     name: PR Comment (Queued)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
@@ -200,6 +207,7 @@ jobs:
   comment-android:
     name: PR Comment (Android)
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [compute-version, build-android]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:

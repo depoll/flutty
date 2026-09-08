@@ -1,147 +1,27 @@
 name: Firebase Distribution
 
-# Main pushes build from trusted main. PR revisions are first built without
-# deployment credentials by PR Preview, then this trusted default-branch
-# workflow downloads and distributes only those immutable artifacts.
+# Main builds are shared by Deploy Private's store and Firebase consumers.
+# This workflow distributes immutable PR artifacts using trusted main code.
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'lib/**'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'assets/**'
-      - 'remote/monkeymux/**'
-      - 'third_party/**'
-      - 'android/**'
-      - '!android/fastlane/metadata-*/**'
-      - 'ios/**'
-      - '!ios/fastlane/metadata-*/**'
-      - 'scripts/build_monkeymux_assets.sh'
-      - 'scripts/deterministic_gzip.go'
-      - 'scripts/ensure_monkeymux_assets.sh'
-      - 'scripts/verify_monkeymux_assets.py'
-      - 'scripts/cache_sqlite3_native_assets.sh'
-      - 'scripts/version_codename.py'
-      - 'scripts/preview_release_notes.rb'
-      - 'Gemfile'
-      - 'Gemfile.lock'
-      - '.github/workflows/build-deploy.yml'
-      - '.github/workflows/deploy-private.yml'
-      - '.github/workflows/firebase-distribution.yml'
-      - '.github/workflows/preview.yml'
-      - '.github/workflows/preview-ios.yml'
   workflow_run:
     workflows: [PR Preview, PR Preview iOS]
     types: [completed]
 
 # Concurrency is applied by the reusable deployment call after PR identity and
-# platform are known. This keeps main serialized and only cancels an older run
-# for the same PR platform.
+# platform are known. Only an older run for the same PR platform is cancelled.
 
 permissions:
   actions: read
   contents: read
 
 jobs:
-  compute-main-version:
-    name: Compute Main Version
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      build-name: ${{ steps.version.outputs.build-name }}
-      build-number: ${{ steps.version.outputs.build-number }}
-      build-codename: ${{ steps.version.outputs.build-codename }}
-      pr-number: ${{ steps.pr-metadata.outputs.pr-number }}
-      pr-title: ${{ steps.pr-metadata.outputs.pr-title }}
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Compute version
-        id: version
-        run: |
-          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD_NUMBER=$(( $(date +%s) / 10 ))
-          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
-
-          {
-            echo "build-name=${BASE_VERSION}"
-            echo "build-number=${BUILD_NUMBER}"
-            echo "build-codename=${BUILD_CODENAME}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Resolve associated PR metadata
-        id: pr-metadata
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const pulls = await github.paginate(
-              github.rest.repos.listPullRequestsAssociatedWithCommit,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                commit_sha: context.sha,
-                per_page: 100,
-              },
-            );
-            const pull =
-              pulls.find((candidate) => candidate.merge_commit_sha === context.sha) ??
-              pulls.find((candidate) => candidate.merged_at) ??
-              pulls[0];
-            core.setOutput('pr-number', pull ? String(pull.number) : '');
-            core.setOutput('pr-title', pull?.title ?? '');
-
-  distribute-main:
-    name: Build & Distribute Main
-    if: github.event_name == 'push'
-    needs: compute-main-version
-    permissions:
-      actions: read
-      contents: read
-      deployments: write
-    uses: ./.github/workflows/build-deploy.yml
-    with:
-      build-name: ${{ needs.compute-main-version.outputs.build-name }}
-      build-number: ${{ needs.compute-main-version.outputs.build-number }}
-      build-codename: ${{ needs.compute-main-version.outputs.build-codename }}
-      pr-number: ${{ needs.compute-main-version.outputs.pr-number }}
-      pr-title: ${{ needs.compute-main-version.outputs.pr-title }}
-      enable-diagnostics: true
-      flavor: private
-      source-ref: ${{ github.sha }}
-      source-branch: ${{ github.ref_name }}
-      deploy-ios-to: firebase
-      deploy-android-to: firebase
-      firebase-tester-groups: ${{ vars.FIREBASE_TESTER_GROUPS || 'testers' }}
-      deployment-concurrency-group: firebase-distribution-main
-    secrets:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
-      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
-      FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRODUCTION_GOOGLE_SERVICES_JSON }}
-      FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON: ${{ secrets.FIREBASE_ANDROID_PRIVATE_GOOGLE_SERVICES_JSON }}
-      FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRODUCTION_GOOGLE_SERVICE_INFO_PLIST }}
-      FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.FIREBASE_IOS_PRIVATE_GOOGLE_SERVICE_INFO_PLIST }}
-      FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-
   resolve-preview:
     name: Resolve Trusted Preview Artifact
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       actions: read
       contents: read
@@ -248,6 +128,10 @@ jobs:
                 return;
               }
               [, buildName, buildNumber, sourceSha] = match;
+              if (workflowRun.event === 'pull_request' && workflowRun.head_sha !== sourceSha) {
+                core.setFailed('iOS artifact source does not match its producer commit.');
+                return;
+              }
               iosIpaArtifact = ipa.name;
               const associated = await github.paginate(
                 github.rest.repos.listPullRequestsAssociatedWithCommit,
@@ -286,6 +170,10 @@ jobs:
               return;
             }
 
+            if (pullRequest.state !== 'open') {
+              core.setOutput('should-distribute', 'false');
+              return;
+            }
             core.setOutput('should-distribute', 'true');
             core.setOutput('platform', platform);
             core.setOutput('pr-number', String(pullRequest.number));

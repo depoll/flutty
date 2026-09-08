@@ -28,7 +28,7 @@ on:
           - adhoc
 
 concurrency:
-  group: regenerate-ios-profiles
+  group: ios-profile-maintenance
   cancel-in-progress: false
 
 permissions:

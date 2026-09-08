@@ -148,7 +148,7 @@ class WorkflowContractsTest(unittest.TestCase):
 
     def test_mobile_triggers_share_all_compile_and_packaging_inputs(self):
         for file, event in [('preview.yml', 'pull_request'), ('deploy-private.yml', 'push'),
-                            ('firebase-distribution.yml', 'push')]:
+                            ('preview-ios.yml', 'pull_request')]:
             with self.subTest(file=file):
                 workflow = self.workflows[file]
                 triggers = workflow.get('on', workflow.get('true'))
@@ -180,8 +180,9 @@ class WorkflowContractsTest(unittest.TestCase):
                         self.assertTrue(step['with']['include-hidden-files'])
 
     def test_deployment_source_is_an_immutable_commit(self):
-        self.assertEqual(self.workflows['deploy-private.yml']['jobs']['deploy']['with']['source-ref'],
-                         '${{ github.sha }}')
+        for job in self.workflows['deploy-private.yml']['jobs'].values():
+            if 'uses' in job:
+                self.assertEqual(job['with']['source-ref'], '${{ github.sha }}')
         for job in self.workflows['build-deploy.yml']['jobs'].values():
             for step in job.get('steps', []):
                 if step.get('uses', '').startswith('actions/checkout@'):
