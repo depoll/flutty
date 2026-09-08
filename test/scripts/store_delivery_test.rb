@@ -165,20 +165,16 @@ class FastfileDeliveryTest < Minitest::Test
     assert @harness.calls.assoc(:match).last[:force_for_new_devices]
   end
 
-  def test_only_writable_signing_receives_the_repository_write_key
-    ENV['MATCH_GIT_WRITE_URL'] = 'git@example.com:signing.git'
-    ENV['MATCH_GIT_WRITE_PRIVATE_KEY'] = 'test-key'
+  def test_only_writable_signing_receives_the_repository_write_credential
+    ENV['MATCH_GIT_WRITE_BASIC_AUTHORIZATION'] = 'test-write-authorization'
     @harness.sync_certs(app_identifier: ['app'], type: 'adhoc', readonly: false)
     options = @harness.calls.assoc(:match).last
-    assert_equal 'git@example.com:signing.git', options[:git_url]
-    assert_equal 'test-key', options[:git_private_key]
-    assert_equal '', options[:git_basic_authorization]
+    assert_equal 'test-write-authorization', options[:git_basic_authorization]
 
     @harness.calls.clear
     @harness.sync_certs(app_identifier: ['app'], type: 'adhoc', readonly: true)
     options = @harness.calls.assoc(:match).last
-    refute options.key?(:git_url)
-    refute options.key?(:git_private_key)
+    refute options.key?(:git_basic_authorization)
   end
 
   def test_followup_waits_for_and_updates_only_the_requested_build

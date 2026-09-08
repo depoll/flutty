@@ -209,13 +209,8 @@ platform :ios do
     check_match_persistence unless readonly
 
     write_credentials = {}
-    unless readonly || ENV['MATCH_GIT_WRITE_URL'].to_s.empty?
-      UI.user_error!('MATCH_GIT_WRITE_PRIVATE_KEY is required for writable signing') if ENV['MATCH_GIT_WRITE_PRIVATE_KEY'].to_s.empty?
-      write_credentials = {
-        git_url: ENV.fetch('MATCH_GIT_WRITE_URL'),
-        git_private_key: ENV.fetch('MATCH_GIT_WRITE_PRIVATE_KEY'),
-        git_basic_authorization: '',
-      }
+    unless readonly || ENV['MATCH_GIT_WRITE_BASIC_AUTHORIZATION'].to_s.empty?
+      write_credentials[:git_basic_authorization] = ENV.fetch('MATCH_GIT_WRITE_BASIC_AUTHORIZATION')
     end
 
     match(
