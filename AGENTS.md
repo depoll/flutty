@@ -16,6 +16,12 @@ bundle exec fastlane regenerate_profiles            # both Private + Production
 bundle exec fastlane regenerate_profiles scheme:Private
 ```
 
+For Firebase App Distribution, select `profile-type: adhoc` in that workflow,
+or run `bundle exec fastlane regenerate_profiles scheme:Private type:adhoc`.
+The default `appstore` profile type is for TestFlight and App Store builds.
+Preview distribution intentionally uses readonly match profiles; refresh them
+through this maintenance workflow when required.
+
 Local Xcode builds with automatic signing pick up the new entitlement on next build without any extra step (Xcode regenerates dev profiles via the developer portal automatically).
 
 ## MonkeyMux Go tests on a Windows dev machine

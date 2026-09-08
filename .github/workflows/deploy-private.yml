@@ -4,11 +4,30 @@ on:
   push:
     branches: [main]
     paths:
-      - '**.dart'
+      - 'lib/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+      - 'assets/**'
+      - 'remote/monkeymux/**'
+      - 'third_party/**'
       - 'android/**'
+      - '!android/fastlane/metadata-*/**'
       - 'ios/**'
+      - '!ios/fastlane/metadata-*/**'
+      - 'scripts/build_monkeymux_assets.sh'
+      - 'scripts/deterministic_gzip.go'
+      - 'scripts/ensure_monkeymux_assets.sh'
+      - 'scripts/verify_monkeymux_assets.py'
+      - 'scripts/cache_sqlite3_native_assets.sh'
+      - 'scripts/version_codename.py'
+      - 'scripts/preview_release_notes.rb'
+      - 'Gemfile'
+      - 'Gemfile.lock'
+      - '.github/workflows/build-deploy.yml'
+      - '.github/workflows/deploy-private.yml'
+      - '.github/workflows/firebase-distribution.yml'
+      - '.github/workflows/preview.yml'
+      - '.github/workflows/preview-ios.yml'
 
 concurrency:
   group: deploy-private
@@ -56,6 +75,8 @@ jobs:
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
       enable-diagnostics: true
       flavor: private
+      source-ref: ${{ github.sha }}
+      source-branch: ${{ github.ref_name }}
       deploy-ios-to: testflight
       deploy-android-to: internal
     secrets:

@@ -7,11 +7,30 @@ on:
   push:
     branches: [main]
     paths:
-      - '**.dart'
+      - 'lib/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+      - 'assets/**'
+      - 'remote/monkeymux/**'
+      - 'third_party/**'
       - 'android/**'
+      - '!android/fastlane/metadata-*/**'
       - 'ios/**'
+      - '!ios/fastlane/metadata-*/**'
+      - 'scripts/build_monkeymux_assets.sh'
+      - 'scripts/deterministic_gzip.go'
+      - 'scripts/ensure_monkeymux_assets.sh'
+      - 'scripts/verify_monkeymux_assets.py'
+      - 'scripts/cache_sqlite3_native_assets.sh'
+      - 'scripts/version_codename.py'
+      - 'scripts/preview_release_notes.rb'
+      - 'Gemfile'
+      - 'Gemfile.lock'
+      - '.github/workflows/build-deploy.yml'
+      - '.github/workflows/deploy-private.yml'
+      - '.github/workflows/firebase-distribution.yml'
+      - '.github/workflows/preview.yml'
+      - '.github/workflows/preview-ios.yml'
   workflow_run:
     workflows: [PR Preview, PR Preview iOS]
     types: [completed]

@@ -280,7 +280,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
 
       - name: Resolve source SHA
@@ -312,6 +312,24 @@ jobs:
           go-version-file: remote/monkeymux/go.mod
           cache-dependency-path: remote/monkeymux/go.sum
 
+      - name: Fingerprint MonkeyMux inputs
+        id: monkeymux-fingerprint
+        if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
+        run: |
+          if [ -f scripts/verify_monkeymux_assets.py ]; then
+            fingerprint="$(bash scripts/build_monkeymux_assets.sh --print-fingerprint)"
+            echo "value=$fingerprint" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Read only: workflow_run can build PR source under the default-branch
+      # cache scope. CI's trusted push-to-main job is the sole payload writer.
+      - name: Restore MonkeyMux assets
+        if: steps.monkeymux-fingerprint.outputs.value != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: assets/monkeymux/
+          key: monkeymux-assets-v1-${{ runner.os }}-${{ steps.monkeymux-fingerprint.outputs.value }}
+
       - name: Build assets
         if: (inputs.build-android && inputs.android-reuse-aab-artifact-name == '') || (inputs.build-ios && inputs.ios-reuse-ipa-artifact-name == '')
         run: |
@@ -329,6 +347,8 @@ jobs:
         with:
           name: monkeymux-assets
           path: assets/monkeymux/
+          include-hidden-files: true
+          if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
@@ -353,7 +373,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
 
       - name: Capture source SHA
@@ -1058,7 +1078,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ github.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 2
 
       - name: Capture source SHA
