@@ -1675,7 +1675,7 @@ jobs:
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
-          bundle exec fastlane finish_testflight scheme:"$SCHEME" metadata_path:../build/testflight-followup/testflight-followup.json
+          bundle exec fastlane finish_testflight scheme:"$SCHEME" metadata_path:"$GITHUB_WORKSPACE/build/testflight-followup/testflight-followup.json"
 
       - name: Finish TestFlight GitHub deployment
         if: always() && needs.build-ios.outputs.deployment-id != ''
