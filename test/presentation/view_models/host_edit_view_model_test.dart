@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -147,6 +148,108 @@ void main() {
           (await settings.getJson(SettingKeys.agentLaunchPresets))!['$id'],
           containsPair('tool', 'codex'),
         );
+      },
+    );
+
+    test(
+      'saves clear, edit, or preserve automation fields by access level',
+      () async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(database.close);
+        final repository = HostRepository(
+          database,
+          SecretEncryptionService.forTesting(),
+        );
+        final id = await repository.insert(
+          HostsCompanion.insert(
+            label: 'Host',
+            hostname: 'example.com',
+            username: 'root',
+            autoConnectCommand: const Value('echo stored'),
+            autoConnectRequiresConfirmation: const Value(true),
+            tmuxSessionName: const Value('stored-session'),
+            tmuxWorkingDirectory: const Value('~/stored'),
+            tmuxExtraFlags: const Value('-f ~/.tmux.conf'),
+            remoteMuxBackend: const Value('tmux'),
+          ),
+        );
+        final container = ProviderContainer(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(repository),
+          ],
+        );
+        addTearDown(container.dispose);
+        final viewModel = container.read(
+          hostEditViewModelProvider(id).notifier,
+        );
+        await viewModel.loadHost();
+        viewModel.markInitialDraft(_draft());
+        Future<Host> save(
+          HostEditDraft draft, {
+          required bool hasAutomationAccess,
+        }) async {
+          await viewModel.save(
+            HostEditSaveRequest(
+              draft: draft,
+              hasAutomationAccess: hasAutomationAccess,
+              hasAgentPresetAccess: hasAutomationAccess,
+            ),
+          );
+          return (await repository.getById(id))!;
+        }
+
+        // Without automation access, an automation startup mode keeps every
+        // stored automation and legacy remote-window field untouched.
+        var host = await save(
+          _draft(
+            startupMode: HostStartupMode.customCommand,
+            autoConnectMode: AutoConnectCommandMode.custom,
+            autoConnectCommand: 'echo edited',
+            tmuxSession: 'edited-session',
+          ),
+          hasAutomationAccess: false,
+        );
+        expect(host.autoConnectCommand, 'echo stored');
+        expect(host.autoConnectRequiresConfirmation, isTrue);
+        expect(host.tmuxSessionName, 'stored-session');
+        expect(host.tmuxWorkingDirectory, '~/stored');
+        expect(host.tmuxExtraFlags, '-f ~/.tmux.conf');
+        expect(host.remoteMuxBackend, 'tmux');
+
+        // With access, a custom command replaces the stored one and the
+        // confirmation flag resets because the command changed.
+        host = await save(
+          _draft(
+            startupMode: HostStartupMode.customCommand,
+            autoConnectMode: AutoConnectCommandMode.custom,
+            autoConnectCommand: '  echo edited  ',
+          ),
+          hasAutomationAccess: true,
+        );
+        expect(host.autoConnectCommand, 'echo edited');
+        expect(host.autoConnectSnippetId, isNull);
+        expect(host.autoConnectRequiresConfirmation, isFalse);
+        expect(host.tmuxSessionName, isNull);
+        expect(host.tmuxWorkingDirectory, isNull);
+        expect(host.tmuxExtraFlags, isNull);
+        expect(host.remoteMuxBackend, isNull);
+
+        // Remote-window modes persist the mux fields and drop automation.
+        host = await save(
+          _draft(startupMode: HostStartupMode.tmux, tmuxSession: 'main'),
+          hasAutomationAccess: false,
+        );
+        expect(host.autoConnectCommand, isNull);
+        expect(host.autoConnectRequiresConfirmation, isFalse);
+        expect(host.tmuxSessionName, 'main');
+        expect(host.remoteMuxBackend, 'tmux');
+
+        // "Do nothing" clears everything regardless of access.
+        host = await save(_draft(), hasAutomationAccess: false);
+        expect(host.autoConnectCommand, isNull);
+        expect(host.tmuxSessionName, isNull);
+        expect(host.remoteMuxBackend, isNull);
       },
     );
 

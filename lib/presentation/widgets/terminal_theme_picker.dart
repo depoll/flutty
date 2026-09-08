@@ -251,9 +251,10 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       result = result.where((t) => !t.isDark).toList();
     }
 
-    // Apply search filter
-    if (_searchQuery.isNotEmpty) {
-      final query = _searchQuery.toLowerCase();
+    // Apply search filter. Match on the same trimmed text the live repository
+    // search uses so surrounding whitespace never hides installed themes.
+    final query = _searchQuery.trim().toLowerCase();
+    if (query.isNotEmpty) {
       result = result
           .where((t) => t.name.toLowerCase().contains(query))
           .toList();
@@ -292,7 +293,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           ),
           const SizedBox(height: 16),
         ],
-        if (darkThemes.isNotEmpty && _filter != _ThemeFilter.light) ...[
+        if (darkThemes.isNotEmpty) ...[
           const _SectionHeader(title: 'Dark Themes'),
           _ThemeGridSection(
             themes: darkThemes,
@@ -301,7 +302,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           ),
           const SizedBox(height: 16),
         ],
-        if (lightThemes.isNotEmpty && _filter != _ThemeFilter.dark) ...[
+        if (lightThemes.isNotEmpty) ...[
           const _SectionHeader(title: 'Light Themes'),
           _ThemeGridSection(
             themes: lightThemes,
