@@ -6,6 +6,7 @@ require 'tmpdir'
 require_relative '../../scripts/preview_release_notes'
 require_relative '../../scripts/store_metadata'
 require_relative '../../scripts/testflight_delivery'
+require_relative '../../scripts/match_git_persistence'
 
 platform :ios do
   before_all do
@@ -192,6 +193,12 @@ platform :ios do
   end
 
   desc 'Sync certificates and profiles for a given type and app identifier'
+  private_lane :check_match_persistence do
+    require 'match'
+    storage = Match::Storage::GitStorage
+    storage.prepend(MatchGitPersistence) unless storage.ancestors.include?(MatchGitPersistence)
+  end
+
   private_lane :sync_certs do |options|
     app_id = options[:app_identifier]
     match_type = options[:type] || 'appstore'
@@ -199,8 +206,20 @@ platform :ios do
     force = options[:force] == true
 
     api_key = get_api_key
+    check_match_persistence unless readonly
+
+    write_credentials = {}
+    unless readonly || ENV['MATCH_GIT_WRITE_URL'].to_s.empty?
+      UI.user_error!('MATCH_GIT_WRITE_PRIVATE_KEY is required for writable signing') if ENV['MATCH_GIT_WRITE_PRIVATE_KEY'].to_s.empty?
+      write_credentials = {
+        git_url: ENV.fetch('MATCH_GIT_WRITE_URL'),
+        git_private_key: ENV.fetch('MATCH_GIT_WRITE_PRIVATE_KEY'),
+        git_basic_authorization: '',
+      }
+    end
 
     match(
+      **write_credentials,
       type: match_type,
       app_identifier: app_id,
       api_key: api_key,

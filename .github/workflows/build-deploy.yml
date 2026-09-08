@@ -197,6 +197,10 @@ on:
         required: false
       MATCH_GIT_BASIC_AUTHORIZATION:
         required: false
+      MATCH_GIT_WRITE_URL:
+        required: false
+      MATCH_GIT_WRITE_PRIVATE_KEY:
+        required: false
       APP_STORE_CONNECT_API_KEY_ID:
         required: false
       APP_STORE_CONNECT_API_ISSUER_ID:
@@ -393,7 +397,7 @@ jobs:
           git archive HEAD \
             Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
             android/fastlane/Fastfile android/fastlane/Appfile \
-            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb scripts/match_git_persistence.rb \
             scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
             .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
@@ -1085,7 +1089,7 @@ jobs:
           git archive HEAD \
             Gemfile Gemfile.lock ios/fastlane/Fastfile ios/fastlane/Appfile ios/fastlane/Matchfile \
             android/fastlane/Fastfile android/fastlane/Appfile \
-            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb \
+            scripts/preview_release_notes.rb scripts/store_metadata.rb scripts/testflight_delivery.rb scripts/match_git_persistence.rb \
             scripts/resolve_next_app_store_patch_version.rb scripts/store_assets.sh \
             .github/actions/deployment-status > "$RUNNER_TEMP/deployment-tooling.tar"
 
@@ -1492,6 +1496,9 @@ jobs:
         if: inputs.deploy-ios-to != 'none'
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_WRITE_URL: ${{ inputs.deploy-ios-to == 'firebase' && !inputs.ios-resign-match-readonly && secrets.MATCH_GIT_WRITE_URL || '' }}
+          MATCH_GIT_WRITE_PRIVATE_KEY: ${{ inputs.deploy-ios-to == 'firebase' && !inputs.ios-resign-match-readonly && secrets.MATCH_GIT_WRITE_PRIVATE_KEY || '' }}
+          GH_TOKEN: ${{ github.token }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
@@ -1509,6 +1516,11 @@ jobs:
           FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
+          if [ -n "$MATCH_GIT_WRITE_URL" ]; then
+            mkdir -p "$HOME/.ssh"
+            gh api meta --jq '.ssh_keys[] | "github.com " + .' >> "$HOME/.ssh/known_hosts"
+            chmod 600 "$HOME/.ssh/known_hosts"
+          fi
           if [ "${{ inputs.deploy-ios-to }}" = "firebase" ]; then
             umask 077
             printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
