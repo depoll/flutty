@@ -244,8 +244,26 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub --total-shards 4 --shard-index ${{ matrix.shard-index }}
 
+  # The vendored pixel goldens were generated on macOS. Run the complete suite
+  # there instead of comparing its rasterization with a Linux renderer.
+  terminal-test:
+    name: Test Vendored Terminal
+    needs: changes
+    if: needs.changes.outputs.run_check == 'true'
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
       - name: Test vendored terminal
-        if: matrix.shard-index == 0
         working-directory: third_party/xterm
         run: |
           flutter pub get
@@ -752,7 +770,7 @@ jobs:
   ci:
     name: CI
     if: ${{ always() && !cancelled() }}
-    needs: [changes, monkeymux-assets, check, test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
+    needs: [changes, monkeymux-assets, check, test, terminal-test, go-test, build-android, build-ios, build-macos, build-windows, build-linux]
     runs-on: ubicloud-standard-4
     timeout-minutes: 2
     steps:
@@ -762,6 +780,7 @@ jobs:
           MONKEYMUX_ASSETS_RESULT: ${{ needs.monkeymux-assets.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           TEST_RESULT: ${{ needs.test.result }}
+          TERMINAL_TEST_RESULT: ${{ needs.terminal-test.result }}
           GO_TEST_RESULT: ${{ needs.go-test.result }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
           IOS_RESULT: ${{ needs.build-ios.result }}
@@ -775,6 +794,7 @@ jobs:
             "monkeymux-assets:$MONKEYMUX_ASSETS_RESULT" \
             "check:$CHECK_RESULT" \
             "test:$TEST_RESULT" \
+            "terminal-test:$TERMINAL_TEST_RESULT" \
             "go-test:$GO_TEST_RESULT" \
             "build-android:$ANDROID_RESULT" \
             "build-ios:$IOS_RESULT" \

@@ -40,6 +40,21 @@ class WorkflowJobGraphTest < Minitest::Test
     end
   end
 
+  def test_terminal_goldens_run_on_macos_and_gate_ci
+    jobs = YAML.safe_load(
+      File.read(File.join(File.dirname(WORKFLOWS.first), 'ci.yml')), aliases: true
+    ).fetch('jobs')
+    terminal = jobs.fetch('terminal-test')
+    assert_match(/^macos-/, terminal.fetch('runs-on'))
+    assert_equal("needs.changes.outputs.run_check == 'true'", terminal.fetch('if'))
+    step = terminal.fetch('steps').find { |entry| entry['working-directory'] == 'third_party/xterm' }
+    assert_equal("flutter pub get\nflutter test --no-pub\n", step.fetch('run'))
+    assert_includes(declared_needs(jobs.fetch('ci')), 'terminal-test')
+    gate = jobs.fetch('ci').fetch('steps').find { |entry| entry['name'] == 'Evaluate results' }
+    assert_equal('${{ needs.terminal-test.result }}', gate.fetch('env').fetch('TERMINAL_TEST_RESULT'))
+    assert_includes(gate.fetch('run'), '"terminal-test:$TERMINAL_TEST_RESULT"')
+  end
+
   private
 
   def each_job
