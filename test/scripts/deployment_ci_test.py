@@ -108,7 +108,10 @@ class DeploymentContractsTest(unittest.TestCase):
             job = workflow['jobs']['compute-version']
             self.assertIn('head.repo.full_name == github.repository', job['if'])
             version_step = next(s for s in job['steps'] if s.get('id') == 'version')
-            self.assertIn('python3 scripts/preview_build_number.py', version_step['run'])
+            self.assertIn('python3 "$RUNNER_TEMP/preview_build_number.py"', version_step['run'])
+            checkouts = [step for step in job['steps'] if step.get('uses', '').startswith('actions/checkout@')]
+            self.assertEqual([step['with']['ref'] for step in checkouts],
+                             ['${{ github.sha }}', '${{ github.event.pull_request.head.sha }}'])
         self.assertIn('github.event.pull_request.updated_at', self.workflows['preview-ios.yml']['run-name'])
 
     def test_processing_leaves_mac_but_remains_part_of_final_status(self):
