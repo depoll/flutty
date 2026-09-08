@@ -1590,7 +1590,7 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
         'exitCode': ?exitCode,
       },
     );
-    scheduleMicrotask(() => unawaited(_releaseResources(closeStreams: true)));
+    scheduleMicrotask(() => unawaited(_releaseResources()));
   }
 
   Future<void> _closeLocal() async {
@@ -1598,18 +1598,12 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
     _closed = true;
     _connected = false;
     _emitState(MonkeyMuxAcpTransportStatus.closed);
-    await _releaseResources(closeStreams: true);
+    await _releaseResources();
   }
 
-  Future<void> _releaseResources({required bool closeStreams}) async {
-    final existing = _releaseFuture;
-    if (existing != null) return existing;
-    final release = _doReleaseResources(closeStreams: closeStreams);
-    _releaseFuture = release;
-    return release;
-  }
+  Future<void> _releaseResources() => _releaseFuture ??= _doReleaseResources();
 
-  Future<void> _doReleaseResources({required bool closeStreams}) async {
+  Future<void> _doReleaseResources() async {
     _generation += 1;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
@@ -1628,11 +1622,9 @@ final class MonkeyMuxAcpTransport implements AcpDecodedTransport {
     _outgoingFrame.clear();
     _pendingInputFrames.clear();
     _pendingInputBytes = 0;
-    if (closeStreams) {
-      if (!_incoming.isClosed) unawaited(_incoming.close());
-      if (!_errors.isClosed) unawaited(_errors.close());
-      if (!_states.isClosed) unawaited(_states.close());
-    }
+    if (!_incoming.isClosed) unawaited(_incoming.close());
+    if (!_errors.isClosed) unawaited(_errors.close());
+    if (!_states.isClosed) unawaited(_states.close());
   }
 
   void _emitState(
