@@ -148,6 +148,23 @@ void main() {
       expect(snippet!.usageCount, 2);
     });
 
+    test('concurrent usage increments each take effect', () async {
+      final id = await repository.insert(
+        SnippetsCompanion.insert(name: 'List Files', command: 'ls'),
+      );
+      expect(
+        await Future.wait(
+          List.generate(10, (_) => repository.incrementUsage(id)),
+        ),
+        everyElement(isTrue),
+      );
+      final snippet = (await repository.getById(id))!;
+      expect(snippet.usageCount, 10);
+      expect(snippet.lastUsedAt, isNotNull);
+      expect(snippet.name, 'List Files');
+      expect(snippet.command, 'ls');
+    });
+
     test('incrementUsage returns false when snippet not exists', () async {
       final result = await repository.incrementUsage(999);
       expect(result, isFalse);

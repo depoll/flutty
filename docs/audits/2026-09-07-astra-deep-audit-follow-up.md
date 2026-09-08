@@ -1,5 +1,12 @@
 # Astra deep audit follow-up, 2026-09-07
 
+## Later cleanup
+
+The subsequent Astra/Fable audit removed the iOS sync-vault bridge, helper,
+registrations, and dedicated test job after confirming that its Dart caller had
+already been deleted. The vault entries below record historical work, not current
+files or validation commands.
+
 ## Scope and method
 
 This audit started from `main` at `550a5380`, after the earlier audit and resume fixes. Main, six subsystem agents, and three follow-up review/implementation agents all used GPT-6 Astra. This report covers new findings, not the fixes in `2026-09-07-astra-code-audit.md`.

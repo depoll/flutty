@@ -60,15 +60,22 @@ class SecretEncryptionService {
   bool isEncryptedValue(String value) => value.startsWith(_encryptedPrefix);
 
   /// Returns whether [value] is a structurally valid encrypted envelope.
-  bool isValidEncryptedEnvelope(String value) =>
-      _isValidEncryptedEnvelope(value);
+  bool isValidEncryptedEnvelope(String value) {
+    if (!isEncryptedValue(value)) return false;
+    try {
+      _decodeEnvelope(value);
+      return true;
+    } on FormatException {
+      return false;
+    }
+  }
 
   /// Encrypts an optional value for database persistence.
   Future<String?> encryptNullable(String? plaintext) async {
     if (plaintext == null || plaintext.isEmpty) {
       return plaintext;
     }
-    if (_isValidEncryptedEnvelope(plaintext)) {
+    if (isValidEncryptedEnvelope(plaintext)) {
       return plaintext;
     }
 
@@ -96,31 +103,11 @@ class SecretEncryptionService {
     if (storedValue == null || storedValue.isEmpty) {
       return storedValue;
     }
-    if (!isEncryptedValue(storedValue)) {
-      throw const FormatException('Unexpected plaintext secret value');
-    }
-
-    final compact = storedValue.substring(_encryptedPrefix.length);
-    final envelopeJson = utf8.decode(
-      base64Url.decode(base64Url.normalize(compact)),
-    );
-    final decodedEnvelope = jsonDecode(envelopeJson);
-    if (decodedEnvelope is! Map) {
-      throw const FormatException('Invalid encrypted value envelope');
-    }
-
-    final envelope = Map<String, dynamic>.from(decodedEnvelope);
-    final nonce = _decodeEnvelopeField(envelope, 'n');
-    final cipherText = _decodeEnvelopeField(envelope, 'c');
-    final mac = _decodeEnvelopeField(envelope, 'm');
-    if (nonce.length != _nonceBytes || mac.length < 16) {
-      throw const FormatException('Invalid encrypted value envelope');
-    }
-
+    final secretBox = _decodeEnvelope(storedValue);
     final secretKey = await _getOrCreateMasterKey();
     try {
       final plainTextBytes = await _algorithm.decrypt(
-        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretBox,
         secretKey: secretKey,
       );
       return utf8.decode(plainTextBytes);
@@ -133,27 +120,26 @@ class SecretEncryptionService {
   Future<String> decryptRequired(String storedValue) async =>
       (await decryptNullable(storedValue)) ?? '';
 
-  bool _isValidEncryptedEnvelope(String value) {
+  SecretBox _decodeEnvelope(String value) {
     if (!isEncryptedValue(value)) {
-      return false;
+      throw const FormatException('Unexpected plaintext secret value');
     }
-    try {
-      final compact = value.substring(_encryptedPrefix.length);
-      final envelopeJson = utf8.decode(
-        base64Url.decode(base64Url.normalize(compact)),
-      );
-      final decodedEnvelope = jsonDecode(envelopeJson);
-      if (decodedEnvelope is! Map) {
-        return false;
-      }
-      final envelope = Map<String, dynamic>.from(decodedEnvelope);
-      final nonce = _decodeEnvelopeField(envelope, 'n');
-      _decodeEnvelopeField(envelope, 'c');
-      final mac = _decodeEnvelopeField(envelope, 'm');
-      return nonce.length == _nonceBytes && mac.length >= 16;
-    } on FormatException {
-      return false;
+    final compact = value.substring(_encryptedPrefix.length);
+    final envelopeJson = utf8.decode(
+      base64Url.decode(base64Url.normalize(compact)),
+    );
+    final decodedEnvelope = jsonDecode(envelopeJson);
+    if (decodedEnvelope is! Map) {
+      throw const FormatException('Invalid encrypted value envelope');
     }
+    final envelope = Map<String, dynamic>.from(decodedEnvelope);
+    final nonce = _decodeEnvelopeField(envelope, 'n');
+    final cipherText = _decodeEnvelopeField(envelope, 'c');
+    final mac = _decodeEnvelopeField(envelope, 'm');
+    if (nonce.length != _nonceBytes || mac.length < 16) {
+      throw const FormatException('Invalid encrypted value envelope');
+    }
+    return SecretBox(cipherText, nonce: nonce, mac: Mac(mac));
   }
 
   Future<SecretKey> _getOrCreateMasterKey() async {

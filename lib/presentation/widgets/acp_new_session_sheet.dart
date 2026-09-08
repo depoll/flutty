@@ -539,6 +539,11 @@ class _NewSessionSheetState extends ConsumerState<_NewSessionSheet> {
       // Resolve a free-tier concurrency block, then retry once.
       if (result is AcpSessionLaunchBlocked && mounted) {
         final resolved = await _resolveConcurrency(result.decision);
+        // Null also covers the sheet being dismissed while the choice dialog
+        // or upgrade route was open, so re-check mounted before touching state.
+        if (!mounted) {
+          return;
+        }
         if (resolved == null) {
           setState(() => _busy = false);
           return;

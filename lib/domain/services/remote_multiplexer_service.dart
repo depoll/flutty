@@ -48,12 +48,7 @@ abstract interface class RemoteMultiplexerService {
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
     String? extraFlags,
-  }) async => (await currentPaneContext(
-    session,
-    sessionName,
-    priority: priority,
-    extraFlags: extraFlags,
-  ))?.currentPath;
+  });
 
   /// Creates a new remote window.
   Future<void> createWindow(

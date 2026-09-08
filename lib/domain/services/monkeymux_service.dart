@@ -2095,19 +2095,10 @@ class _MonkeyMuxWindowChangeObserver {
     });
   }
 
-  Duration _nextReconnectDelay() {
-    const baseDelay = Duration(milliseconds: 250);
-    const maxDelay = Duration(seconds: 5);
-    var factor = 1;
-    for (var i = 0; i < _reconnectAttempts && factor < 16; i += 1) {
-      factor *= 2;
-    }
-    final milliseconds = baseDelay.inMilliseconds * factor;
-    if (milliseconds >= maxDelay.inMilliseconds) {
-      return maxDelay;
-    }
-    return Duration(milliseconds: milliseconds);
-  }
+  /// Exponential backoff: 250ms doubling per attempt, capped at 4s.
+  Duration _nextReconnectDelay() => Duration(
+    milliseconds: 250 << (_reconnectAttempts < 4 ? _reconnectAttempts : 4),
+  );
 
   Future<void> dispose() => _disposeFuture ??= _dispose();
 

@@ -56,13 +56,17 @@ type muxProcess interface {
 	// Hangup asks the process (group) to terminate, as if the controlling
 	// terminal went away (SIGHUP on POSIX).
 	Hangup()
+	// Kill terminates the process group immediately. The caller must own the
+	// process exclusively and must not call Wait until Kill returns.
+	Kill()
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.187"
+	monkeyMuxVersion                  = "0.1.188"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
+	controlMaxFrameBytes              = 1024 * 1024
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
 	piSessionActivityMatchTolerance   = 15 * time.Second
@@ -665,6 +669,9 @@ type muxServer struct {
 	// server and keep mutating its state (markWindowClosed) after shutdown,
 	// which races whatever runs next in the same process.
 	windowWatchers sync.WaitGroup
+	// pendingWindowStarts owns admitted launches until watcher registration or
+	// rejected-process cleanup finishes. Add is guarded by s.mu and !s.closed.
+	pendingWindowStarts sync.WaitGroup
 	// socketRepublishers tracks the path-healing goroutine so close cannot
 	// return while it still owns a replacement listener with unlink disabled.
 	socketRepublishers sync.WaitGroup
@@ -6260,6 +6267,14 @@ func newWindowAgentTool(
 }
 
 func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error) {
+	return s.createWindowWithStarter(options, startWindow)
+}
+
+// createWindowWithStarter lets lifecycle tests gate startup without global hooks.
+func (s *muxServer) createWindowWithStarter(
+	options createWindowOptions,
+	start func(*exec.Cmd, int, int) (muxPty, muxProcess, error),
+) (*muxWindow, error) {
 	options.command = monkeyMuxAgentLaunchCommand(options.command)
 	var replay []byte
 	var snapshots []windowSnapshot
@@ -6307,11 +6322,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	cmd.Env = terminalEnvironment(os.Environ())
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, errServerClosed
+	}
+	s.pendingWindowStarts.Add(1)
 	cols, rows := s.publishedWidth, s.publishedHeight
 	s.mu.Unlock()
 
-	windowPty, proc, err := startWindow(cmd, cols, rows)
+	windowPty, proc, err := start(cmd, cols, rows)
 	if err != nil {
+		s.pendingWindowStarts.Done()
 		return nil, err
 	}
 
@@ -6322,8 +6343,10 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		// watchers would join the group after close already waited. Tear the
 		// freshly started process down instead of publishing it.
 		s.mu.Unlock()
-		proc.Hangup()
-		_ = windowPty.Close()
+		go func() {
+			defer s.pendingWindowStarts.Done()
+			cleanupRejectedWindow(windowPty, proc)
+		}()
 		return nil, errServerClosed
 	}
 	// Registering the watchers here, rather than beside the `go` statements
@@ -6331,6 +6354,7 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 	// observes s.closed it knows no further watchers can be added, so its Wait
 	// cannot race an Add.
 	s.windowWatchers.Add(2)
+	s.pendingWindowStarts.Done() // Transfer ownership to the watchers under s.mu.
 	s.nextID++
 	window := &muxWindow{
 		id:                        fmt.Sprintf("@%d", s.nextID),
@@ -6422,6 +6446,17 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		Windows: snapshots,
 	})
 	return window, nil
+}
+
+// cleanupRejectedWindow exclusively owns a started but unpublished window.
+// There is no useful work to preserve, so force termination immediately rather
+// than leaving a hangup-ignoring child alive. No Wait may run before Kill: on
+// Unix the unreaped leader reserves its PID/PGID throughout group signaling.
+// Keep terminal close and Wait off the rejection path, too.
+func cleanupRejectedWindow(windowPty muxPty, proc muxProcess) {
+	proc.Kill()
+	_ = windowPty.Close()
+	_ = proc.Wait()
 }
 
 func (s *muxServer) readWindow(window *muxWindow) {
@@ -6806,7 +6841,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 
 func (s *muxServer) handleConnection(conn net.Conn) {
 	reader := bufio.NewReader(conn)
-	line, err := reader.ReadBytes('\n')
+	line, err := readBoundedProtocolLine(reader, controlMaxFrameBytes)
 	if err != nil {
 		_ = conn.Close()
 		return
@@ -8414,14 +8449,6 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeMu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
-	if s.closed {
-		s.attachViewportTransitionWindowID = ""
-		s.mu.Unlock()
-		s.attachMu.Unlock()
-		s.resizeMu.Unlock()
-		client.close()
-		return
-	}
 	if s.attachClients == nil {
 		s.attachClients = map[net.Conn]*attachClient{}
 	}
@@ -8553,7 +8580,14 @@ func (s *muxServer) runAttachInputActions(client *attachClient) {
 
 func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 	client := newControlClient(conn)
-	s.addControl(client)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	s.controls[client] = struct{}{}
+	s.mu.Unlock()
 	defer func() {
 		client.close()
 		s.removeControl(client)
@@ -8576,7 +8610,7 @@ func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 	})
 
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), controlMaxFrameBytes)
 	for scanner.Scan() {
 		var request controlMessage
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
@@ -8798,12 +8832,6 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 	default:
 		client.sendError(request, fmt.Errorf("unsupported command %q", request.Type))
 	}
-}
-
-func (s *muxServer) addControl(client *controlClient) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.controls[client] = struct{}{}
 }
 
 func (s *muxServer) removeControl(client *controlClient) {
@@ -16396,6 +16424,10 @@ func (s *muxServer) close() {
 	// reacquire s.mu. Join it before close returns so it can observe closed and
 	// remove that listener's path rather than leaving stale socket residue.
 	s.socketRepublishers.Wait()
+	// Admission closed under s.mu before any Wait, so no start can join late.
+	// Unlike normal watchers, unpublished children have no useful work to
+	// preserve: join their forced cleanup through Wait before closing closeDone.
+	s.pendingWindowStarts.Wait()
 }
 
 // windowWatcherShutdownTimeout bounds how long close waits for the per-window

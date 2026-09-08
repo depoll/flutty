@@ -7737,6 +7737,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceRemoteRefresh: true,
           reason: 'open_existing_restore_override',
         );
+        if (!mounted) return;
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
@@ -7869,6 +7870,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         forceRemoteRefresh: true,
         reason: 'open_new_restore_override',
       );
+      if (!mounted) return;
       setState(() {
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;

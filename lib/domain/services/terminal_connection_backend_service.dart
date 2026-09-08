@@ -110,13 +110,8 @@ class TerminalConnectionBackendService {
     final muxSessionName =
         _nonEmpty(sessionName) ?? _nonEmpty(session.remoteMuxSessionName);
 
-    if (backend == null ||
-        backend == RemoteMuxBackend.auto ||
-        muxSessionName == null) {
-      return _DirectTerminalConnectionBackend(
-        session: session,
-        commandRunner: const _SshClientCommandRunner(),
-      );
+    if (backend == null || muxSessionName == null) {
+      return _DirectTerminalConnectionBackend(session);
     }
 
     return switch (backend) {
@@ -127,7 +122,6 @@ class TerminalConnectionBackendService {
         sessionName: muxSessionName,
         remoteMultiplexer: _monkeyMuxService,
         monkeyMuxService: _monkeyMuxService,
-        commandRunner: const _SshClientCommandRunner(),
       ),
       RemoteMuxBackend.tmux => _MultiplexedTerminalConnectionBackend(
         session: session,
@@ -136,22 +130,14 @@ class TerminalConnectionBackendService {
         sessionName: muxSessionName,
         remoteMultiplexer: _tmuxMultiplexer,
         extraFlags: tmuxExtraFlags,
-        commandRunner: const _SshClientCommandRunner(),
       ),
-      RemoteMuxBackend.auto => _DirectTerminalConnectionBackend(
-        session: session,
-        commandRunner: const _SshClientCommandRunner(),
-      ),
+      RemoteMuxBackend.auto => _DirectTerminalConnectionBackend(session),
     };
   }
 }
 
 class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
-  const _DirectTerminalConnectionBackend({
-    required SshSession session,
-    required _SshClientCommandRunner commandRunner,
-  }) : _session = session,
-       _commandRunner = commandRunner;
+  const _DirectTerminalConnectionBackend(this._session);
 
   static const _capabilities = TerminalBackendCapabilities(
     supportsWindows: false,
@@ -160,7 +146,6 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
   );
 
   final SshSession _session;
-  final _SshClientCommandRunner _commandRunner;
 
   @override
   TerminalBackendType get type => TerminalBackendType.direct;
@@ -203,11 +188,10 @@ class _DirectTerminalConnectionBackend implements TerminalConnectionBackend {
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
     String? workingDirectory,
-  }) => _commandRunner.run(
+  }) => _runSshClientCommand(
     _session,
-    command,
+    _wrapClientCommandWorkingDirectory(command, workingDirectory),
     priority: priority,
-    workingDirectory: workingDirectory,
   );
 
   @override
@@ -251,7 +235,6 @@ class _MultiplexedTerminalConnectionBackend
     required RemoteMuxBackend remoteMuxBackend,
     required String sessionName,
     required RemoteMultiplexerService remoteMultiplexer,
-    required _SshClientCommandRunner commandRunner,
     MonkeyMuxService? monkeyMuxService,
     String? extraFlags,
   }) : _session = session,
@@ -259,7 +242,6 @@ class _MultiplexedTerminalConnectionBackend
        _remoteMuxBackend = remoteMuxBackend,
        _sessionName = sessionName,
        _remoteMultiplexer = remoteMultiplexer,
-       _commandRunner = commandRunner,
        _monkeyMuxService = monkeyMuxService,
        _extraFlags = extraFlags;
 
@@ -280,7 +262,6 @@ class _MultiplexedTerminalConnectionBackend
   final RemoteMuxBackend _remoteMuxBackend;
   final String _sessionName;
   final RemoteMultiplexerService _remoteMultiplexer;
-  final _SshClientCommandRunner _commandRunner;
   final MonkeyMuxService? _monkeyMuxService;
   final String? _extraFlags;
 
@@ -344,7 +325,7 @@ class _MultiplexedTerminalConnectionBackend
         priority: priority,
       );
     }
-    return _commandRunner.run(_session, commandToRun, priority: priority);
+    return _runSshClientCommand(_session, commandToRun, priority: priority);
   }
 
   @override
@@ -399,39 +380,35 @@ class _MultiplexedTerminalConnectionBackend
       _remoteMultiplexer.isExecChannelCoolingDown(_session);
 }
 
-class _SshClientCommandRunner {
-  const _SshClientCommandRunner();
-
-  Future<TerminalClientCommandResult> run(
-    SshSession session,
-    String command, {
-    SshExecPriority priority = SshExecPriority.normal,
-    String? workingDirectory,
-  }) => session.runQueuedExec(() async {
-    final exec = await session.execute(
-      _wrapClientCommandWorkingDirectory(command, workingDirectory),
+/// Runs [command] on a short-lived exec channel and collects its output.
+///
+/// [command] must already carry any working-directory wrapping.
+Future<TerminalClientCommandResult> _runSshClientCommand(
+  SshSession session,
+  String command, {
+  required SshExecPriority priority,
+}) => session.runQueuedExec(() async {
+  final exec = await session.execute(command);
+  try {
+    final stdout = StringBuffer();
+    final stderr = StringBuffer();
+    final stdoutFuture = exec.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stdout.write);
+    final stderrFuture = exec.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stderr.write);
+    await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
+    final stdoutText = stdout.toString();
+    return TerminalClientCommandResult(
+      output: stdoutText.isNotEmpty ? stdoutText : stderr.toString(),
     );
-    try {
-      final stdout = StringBuffer();
-      final stderr = StringBuffer();
-      final stdoutFuture = exec.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .forEach(stdout.write);
-      final stderrFuture = exec.stderr
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .forEach(stderr.write);
-      await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
-      final stdoutText = stdout.toString();
-      return TerminalClientCommandResult(
-        output: stdoutText.isNotEmpty ? stdoutText : stderr.toString(),
-      );
-    } finally {
-      exec.close();
-    }
-  }, priority: priority);
-}
+  } finally {
+    exec.close();
+  }
+}, priority: priority);
 
 String? _nonEmpty(String? value) {
   final trimmed = value?.trim();
