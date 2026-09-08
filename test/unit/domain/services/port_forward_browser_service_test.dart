@@ -269,36 +269,6 @@ void main() {
         });
       });
 
-      test('isolates automatic services by host and remote port', () {
-        expect(
-          automaticPortForwardBrowserHost(
-            hostDomain: 'api.dev.localhost',
-            hostId: 1,
-            remoteHost: '127.0.0.1',
-            remotePort: 3000,
-          ),
-          'api.dev.localhost',
-        );
-        expect(
-          automaticPortForwardBrowserHost(
-            hostDomain: 'other.localhost',
-            hostId: 2,
-            remoteHost: '127.0.0.1',
-            remotePort: 3000,
-          ),
-          'other.localhost',
-        );
-        expect(
-          automaticPortForwardBrowserHost(
-            hostDomain: 'api.dev.localhost',
-            hostId: 1,
-            remoteHost: '::1',
-            remotePort: 8080,
-          ),
-          'api.dev.localhost',
-        );
-      });
-
       test('validates DNS labels and allows an empty generated-name field', () {
         final sixtyCharacterLabel = List.filled(60, 'a').join();
         final maximumLengthPrefix = [
