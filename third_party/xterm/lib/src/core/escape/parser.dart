@@ -290,7 +290,7 @@ class EscapeParser {
 
     // test whether the csi is a `CSI ? Ps ...` or `CSI Ps ...`
     final prefix = _queue.peek();
-    if (prefix >= Ascii.colon && prefix <= Ascii.questionMark) {
+    if (prefix >= Ascii.lessThan && prefix <= Ascii.questionMark) {
       _csi.prefix = prefix;
       _queue.consume();
     } else {
@@ -372,8 +372,8 @@ class EscapeParser {
       if (char >= Ascii.num0 && char <= Ascii.num9) {
         hasParam = true;
         pendingEmptyParam = false;
-        param *= 10;
-        param += char - Ascii.num0;
+        // Saturate before integer overflow can turn a count or position negative.
+        param = (param * 10 + char - Ascii.num0).clamp(0, 0x7fffffff);
         continue;
       }
 
@@ -522,15 +522,9 @@ class EscapeParser {
   ///
   /// https://terminalguide.namepad.de/seq/csi_sf/
   void _csiHandleCursorPosition() {
-    var row = 1;
-    var col = 1;
-
-    if (_csi.params.length == 2) {
-      row = _csi.params[0];
-      col = _csi.params[1];
-    }
-
-    handler.setCursor(col - 1, row - 1);
+    final row = _csi.params.isNotEmpty ? _csi.params[0] : 1;
+    final col = _csi.params.length > 1 ? _csi.params[1] : 1;
+    handler.setCursor(col > 0 ? col - 1 : 0, row > 0 ? row - 1 : 0);
   }
 
   /// `ESC [ Ps g` Tab Clear (TBC)
