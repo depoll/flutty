@@ -104,7 +104,7 @@ func assertRejectedWindowsHandlesClosed(t *testing.T, proc *winProcess) {
 		t.Errorf("process handle was not closed: %v", err)
 	}
 	for _, file := range []*os.File{proc.pty.readFile, proc.pty.writeFile} {
-		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) {
+		if _, err := file.Stat(); !errors.Is(err, os.ErrClosed) && !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
 			t.Errorf("ConPTY pipe was not closed: %v", err)
 		}
 	}
