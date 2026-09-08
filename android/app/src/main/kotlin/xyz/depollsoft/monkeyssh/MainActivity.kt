@@ -3,6 +3,7 @@ package xyz.depollsoft.monkeyssh
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -312,25 +313,40 @@ class MainActivity : FlutterFragmentActivity() {
         val sourceUri = transferIntent.data ?: return
         try {
             pendingTransferPayload =
-                contentResolver.openInputStream(sourceUri)?.use { stream ->
-                    val buffer = ByteArray(8192)
-                    val output = ByteArrayOutputStream()
-                    var bytesRead: Int
-                    var totalBytes = 0
-                    while (stream.read(buffer).also { bytesRead = it } != -1) {
-                        totalBytes += bytesRead
-                        if (totalBytes > maxTransferPayloadBytes) {
-                            return@use null
-                        }
-                        output.write(buffer, 0, bytesRead)
-                    }
-                    output.toString(Charsets.UTF_8.name())
-                }
+                readBoundedContent(
+                    sourceUri,
+                    maxTransferPayloadBytes,
+                    "Transfer payload exceeds ${maxTransferPayloadBytes / 1024} KB limit",
+                )?.toString(Charsets.UTF_8)
             notifyIncomingTransferPayload()
         } catch (_: Exception) {
             pendingTransferPayload = null
         }
     }
+
+    /**
+     * Reads a content URI fully, or null when it cannot be opened. Throws
+     * [IllegalStateException] with [limitMessage] once [maxBytes] is exceeded.
+     */
+    private fun readBoundedContent(
+        uri: Uri,
+        maxBytes: Int,
+        limitMessage: String,
+    ): ByteArray? =
+        contentResolver.openInputStream(uri)?.use { stream ->
+            val buffer = ByteArray(8192)
+            val output = ByteArrayOutputStream()
+            var bytesRead: Int
+            var totalBytes = 0
+            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                totalBytes += bytesRead
+                if (totalBytes > maxBytes) {
+                    throw IllegalStateException(limitMessage)
+                }
+                output.write(buffer, 0, bytesRead)
+            }
+            output.toByteArray()
+        }
 
     private var keyboardVisible = false
 
@@ -380,77 +396,48 @@ class MainActivity : FlutterFragmentActivity() {
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
         val displayName = resolveDisplayName(uri) ?: "clipboard-file"
+        val limitMessage =
+            "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit"
         val contentLength = resolveContentLength(uri)
         if (contentLength != null && contentLength > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
-            throw IllegalStateException(
-                "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
-            )
+            throw IllegalStateException(limitMessage)
         }
         val bytes =
-            contentResolver.openInputStream(uri)?.use { stream ->
-                val buffer = ByteArray(8192)
-                val output = ByteArrayOutputStream()
-                var bytesRead: Int
-                var totalBytes = 0
-                while (stream.read(buffer).also { bytesRead = it } != -1) {
-                    totalBytes += bytesRead
-                    if (totalBytes > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
-                        throw IllegalStateException(
-                            "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
-                        )
-                    }
-                    output.write(buffer, 0, bytesRead)
-                }
-                output.toByteArray()
-            } ?: throw IllegalStateException("Could not open clipboard URI")
+            readBoundedContent(uri, MAX_CLIPBOARD_CONTENT_URI_BYTES, limitMessage)
+                ?: throw IllegalStateException("Could not open clipboard URI")
         return mapOf(
             "name" to displayName,
             "bytes" to bytes,
         )
     }
 
-    private fun resolveContentLength(uri: Uri): Long? {
-        if (uri.scheme == "content") {
-            contentResolver
-                .query(
-                    uri,
-                    arrayOf(OpenableColumns.SIZE),
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    val columnIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (columnIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(columnIndex)) {
-                        return cursor.getLong(columnIndex)
-                    }
-                }
+    private fun resolveContentLength(uri: Uri): Long? =
+        queryOpenableColumn(uri, OpenableColumns.SIZE) { cursor, columnIndex ->
+            if (cursor.isNull(columnIndex)) null else cursor.getLong(columnIndex)
         }
-        return null
-    }
 
-    private fun resolveDisplayName(uri: Uri): String? {
-        val displayName = resolveContentDisplayName(uri)
-        if (displayName != null) {
-            return displayName
+    private fun resolveDisplayName(uri: Uri): String? =
+        resolveContentDisplayName(uri) ?: uri.lastPathSegment?.substringAfterLast('/')
+
+    private fun resolveContentDisplayName(uri: Uri): String? =
+        queryOpenableColumn(uri, OpenableColumns.DISPLAY_NAME) { cursor, columnIndex ->
+            cursor.getString(columnIndex)
         }
-        return uri.lastPathSegment?.substringAfterLast('/')
-    }
 
-    private fun resolveContentDisplayName(uri: Uri): String? {
-        if (uri.scheme == "content") {
-            contentResolver
-                .query(
-                    uri,
-                    arrayOf(OpenableColumns.DISPLAY_NAME),
-                    null,
-                    null,
-                    null,
-                )?.use { cursor ->
-                    val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (columnIndex >= 0 && cursor.moveToFirst()) {
-                        return cursor.getString(columnIndex)
-                    }
-                }
+    /** Reads one [OpenableColumns] value from a content URI's first row. */
+    private fun <T> queryOpenableColumn(
+        uri: Uri,
+        column: String,
+        read: (Cursor, Int) -> T?,
+    ): T? {
+        if (uri.scheme != "content") {
+            return null
+        }
+        contentResolver.query(uri, arrayOf(column), null, null, null)?.use { cursor ->
+            val columnIndex = cursor.getColumnIndex(column)
+            if (columnIndex >= 0 && cursor.moveToFirst()) {
+                return read(cursor, columnIndex)
+            }
         }
         return null
     }

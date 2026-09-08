@@ -127,14 +127,6 @@ String hostPortProxyDomain({
   return '$prefix.localhost';
 }
 
-/// Returns the one browser host used by all detected services for a saved host.
-String automaticPortForwardBrowserHost({
-  required String hostDomain,
-  required int hostId,
-  required String remoteHost,
-  required int remotePort,
-}) => hostDomain;
-
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
 ///
 /// Returns null when [uri] does not target [sourceUri].

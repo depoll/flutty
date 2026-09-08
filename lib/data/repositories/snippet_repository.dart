@@ -18,23 +18,16 @@ class SnippetRepository {
   Stream<List<Snippet>> watchAll() => _orderedSnippetsQuery().watch();
 
   /// Get snippets by folder.
-  Future<List<Snippet>> getByFolder(int? folderId) {
-    if (folderId == null) {
-      return (_orderedSnippetsQuery()..where((s) => s.folderId.isNull())).get();
-    }
-    return (_orderedSnippetsQuery()..where((s) => s.folderId.equals(folderId)))
-        .get();
-  }
+  Future<List<Snippet>> getByFolder(int? folderId) =>
+      (_orderedSnippetsQuery()
+            ..where((s) => s.folderId.equalsNullable(folderId)))
+          .get();
 
   /// Watch snippets by folder.
-  Stream<List<Snippet>> watchByFolder(int? folderId) {
-    if (folderId == null) {
-      return (_orderedSnippetsQuery()..where((s) => s.folderId.isNull()))
+  Stream<List<Snippet>> watchByFolder(int? folderId) =>
+      (_orderedSnippetsQuery()
+            ..where((s) => s.folderId.equalsNullable(folderId)))
           .watch();
-    }
-    return (_orderedSnippetsQuery()..where((s) => s.folderId.equals(folderId)))
-        .watch();
-  }
 
   /// Get frequently used snippets.
   Future<List<Snippet>> getFrequent({int limit = 10}) =>
@@ -46,23 +39,15 @@ class SnippetRepository {
   /// Search snippets.
   Future<List<Snippet>> search(String query) {
     final escaped = escapeSqlLikeQuery(query);
-    return (_db.select(_db.snippets)
-          ..where(
-            (s) =>
-                s.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-                s.command.like(
-                  '%$escaped%',
-                  escapeChar: sqlLikeEscapeCharacter,
-                ) |
-                s.description.like(
-                  '%$escaped%',
-                  escapeChar: sqlLikeEscapeCharacter,
-                ),
-          )
-          ..orderBy([
-            (s) => OrderingTerm.asc(s.sortOrder),
-            (s) => OrderingTerm.asc(s.id),
-          ]))
+    return (_orderedSnippetsQuery()..where(
+          (s) =>
+              s.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
+              s.command.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
+              s.description.like(
+                '%$escaped%',
+                escapeChar: sqlLikeEscapeCharacter,
+              ),
+        ))
         .get();
   }
 
@@ -106,33 +91,24 @@ class SnippetRepository {
 
   /// Increment usage count.
   Future<bool> incrementUsage(int id) async {
-    final snippet = await getById(id);
-    if (snippet == null) return false;
-    return update(
-      snippet.copyWith(
-        usageCount: snippet.usageCount + 1,
-        lastUsedAt: Value(DateTime.now()),
-      ),
-    );
+    final updated =
+        await (_db.update(_db.snippets)..where((s) => s.id.equals(id))).write(
+          SnippetsCompanion.custom(
+            usageCount: _db.snippets.usageCount + const Constant(1),
+            lastUsedAt: Variable(DateTime.now()),
+          ),
+        );
+    return updated > 0;
   }
 
   // Snippet folders
 
   /// Get all folders.
-  Future<List<SnippetFolder>> getAllFolders() =>
-      (_db.select(_db.snippetFolders)..orderBy([
-            (f) => OrderingTerm.asc(f.sortOrder),
-            (f) => OrderingTerm.asc(f.id),
-          ]))
-          .get();
+  Future<List<SnippetFolder>> getAllFolders() => _orderedFoldersQuery().get();
 
   /// Watch all folders.
   Stream<List<SnippetFolder>> watchAllFolders() =>
-      (_db.select(_db.snippetFolders)..orderBy([
-            (f) => OrderingTerm.asc(f.sortOrder),
-            (f) => OrderingTerm.asc(f.id),
-          ]))
-          .watch();
+      _orderedFoldersQuery().watch();
 
   /// Insert a folder.
   Future<int> insertFolder(SnippetFoldersCompanion folder) async {
@@ -163,6 +139,13 @@ class SnippetRepository {
         (s) => OrderingTerm.asc(s.sortOrder),
         (s) => OrderingTerm.asc(s.id),
       ]);
+
+  SimpleSelectStatement<$SnippetFoldersTable, SnippetFolder>
+  _orderedFoldersQuery() => _db.select(_db.snippetFolders)
+    ..orderBy([
+      (f) => OrderingTerm.asc(f.sortOrder),
+      (f) => OrderingTerm.asc(f.id),
+    ]);
 
   Future<int> _nextSnippetSortOrder() async {
     final expression = _db.snippets.sortOrder.max();

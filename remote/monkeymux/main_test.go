@@ -5497,7 +5497,7 @@ func TestCreateWindowHoldsAgentWindowOpenOnFastFailure(t *testing.T) {
 // sets s.closed and snapshots s.windows under one lock, so a window published
 // after that point would never be torn down and its watchers would join the
 // wait group after close had already waited on it. createWindow must instead
-// refuse and clean up the process it just started.
+// refuse without starting a process.
 func TestCreateWindowAfterCloseDoesNotLeakWindow(t *testing.T) {
 	server := newMuxServer("test")
 	server.close()

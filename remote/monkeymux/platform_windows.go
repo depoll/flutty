@@ -322,8 +322,28 @@ func (p *winProcess) Hangup() {
 	}
 }
 
+func (p *winProcess) Kill() {
+	// The handle still belongs to this unwatched process, even if it exited
+	// already. Do not use taskkill with a numeric PID that could be recycled.
+	_ = windows.TerminateProcess(p.handle, 1)
+	if p.pty != nil {
+		// Rejected windows have no readWindow goroutine. ConPTY close can wait
+		// for its final output to drain before terminating the attached tree.
+		drained := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, p.pty)
+			close(drained)
+		}()
+		_ = p.pty.Close()
+		<-drained
+	}
+}
+
 // startWindow launches cmd attached to a new ConPTY sized to cols x rows.
 func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) {
+	if cmd.Err != nil {
+		return nil, nil, cmd.Err
+	}
 	if cols <= 0 {
 		cols = defaultColumns
 	}

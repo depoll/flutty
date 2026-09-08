@@ -102,6 +102,37 @@ void main() {
       expect(service.isValidEncryptedEnvelope(encrypted!), isTrue);
     });
 
+    test(
+      'validation and decryption reject the same malformed structures',
+      () async {
+        final encrypted = await service.encryptRequired('secret');
+        final envelope =
+            jsonDecode(
+                  utf8.decode(
+                    base64Url.decode(encrypted.substring('ENCv1:'.length)),
+                  ),
+                )
+                as Map<String, dynamic>;
+        final malformed = <Object>[
+          [],
+          {...envelope}..remove('c'),
+          {...envelope, 'n': base64Url.encode(List.filled(11, 0))},
+          {...envelope, 'm': base64Url.encode(List.filled(15, 0))},
+          {...envelope, 'c': 42},
+          {...envelope, 'm': '!'},
+        ];
+        for (final value in malformed) {
+          final stored =
+              'ENCv1:${base64Url.encode(utf8.encode(jsonEncode(value)))}';
+          expect(service.isValidEncryptedEnvelope(stored), isFalse);
+          await expectLater(
+            service.decryptRequired(stored),
+            throwsFormatException,
+          );
+        }
+      },
+    );
+
     test('reuses and migrates the legacy master key entry', () async {
       final storage = _MockFlutterSecureStorage();
       final writes = <String, String>{};

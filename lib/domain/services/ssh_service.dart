@@ -4016,6 +4016,9 @@ class SshSession {
   }
 
   /// Starts a saved [portForward] on this SSH session.
+  ///
+  /// Dispatches through the public per-type methods so subclasses (including
+  /// test fakes) can intercept each forward kind.
   Future<bool> startPortForward(PortForward portForward) {
     switch (portForward.forwardType) {
       case 'local':
@@ -5152,12 +5155,7 @@ class SshSession {
         portForwardId: portForwardId,
         remoteHost: listener.host,
         remotePort: listener.port,
-        proxyHost: automaticPortForwardBrowserHost(
-          hostDomain: proxyHost,
-          hostId: hostId,
-          remoteHost: listener.host,
-          remotePort: listener.port,
-        ),
+        proxyHost: proxyHost,
         isShellRelated: listener.isShellRelated,
       );
       if (_isClosing || generation != _automaticPortForwardGeneration) {
@@ -8476,17 +8474,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     session
       ..removePreviewListener(_schedulePreviewStateRefresh)
       ..addPreviewListener(_schedulePreviewStateRefresh);
-    final existingSubscription = _disconnectSubscriptions.remove(
-      session.connectionId,
+    unawaited(_disconnectSubscriptions.remove(session.connectionId)?.cancel());
+    unawaited(
+      _connectionHealthFailureSubscriptions
+          .remove(session.connectionId)
+          ?.cancel(),
     );
-    if (existingSubscription != null) {
-      unawaited(existingSubscription.cancel());
-    }
-    final existingHealthFailureSubscription =
-        _connectionHealthFailureSubscriptions.remove(session.connectionId);
-    if (existingHealthFailureSubscription != null) {
-      unawaited(existingHealthFailureSubscription.cancel());
-    }
     _disconnectSubscriptions[session.connectionId] = session.client.done
         .asStream()
         .listen(
@@ -8513,19 +8506,15 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
             ),
           ),
         );
-    final existingNotificationSubscription = _terminalNotificationSubscriptions
-        .remove(session.connectionId);
-    if (existingNotificationSubscription != null) {
-      unawaited(existingNotificationSubscription.cancel());
-    }
+    unawaited(
+      _terminalNotificationSubscriptions.remove(session.connectionId)?.cancel(),
+    );
     _terminalNotificationSubscriptions[session.connectionId] = session
         .terminalNotifications
         .listen((request) => _queueTerminalNotification(session, request));
-    final existingPortForwardSubscription = _portForwardChangeSubscriptions
-        .remove(session.connectionId);
-    if (existingPortForwardSubscription != null) {
-      unawaited(existingPortForwardSubscription.cancel());
-    }
+    unawaited(
+      _portForwardChangeSubscriptions.remove(session.connectionId)?.cancel(),
+    );
     _portForwardChangeSubscriptions[session.connectionId] = session
         .portForwardChanges
         .listen((_) => _handleSessionPortForwardsChanged(session.hostId));
@@ -8715,17 +8704,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
       _schedulePreviewStateRefresh,
     );
-    final subscription = _disconnectSubscriptions.remove(connectionId);
-    if (subscription != null) {
-      unawaited(subscription.cancel());
-    }
-    final healthFailureSubscription = _connectionHealthFailureSubscriptions
-        .remove(connectionId);
-    if (healthFailureSubscription != null) {
-      unawaited(healthFailureSubscription.cancel());
-    }
-    final notificationSubscription = _terminalNotificationSubscriptions.remove(
-      connectionId,
+    unawaited(_disconnectSubscriptions.remove(connectionId)?.cancel());
+    unawaited(
+      _connectionHealthFailureSubscriptions.remove(connectionId)?.cancel(),
+    );
+    unawaited(
+      _terminalNotificationSubscriptions.remove(connectionId)?.cancel(),
     );
     final expiries = _terminalNotificationExpiries.entries
         .where((entry) => entry.key.connectionId == connectionId)
@@ -8737,15 +8721,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       (key, _) => key.connectionId == connectionId,
     );
     _terminalNotificationQueues.remove(connectionId)?.pending.clear();
-    if (notificationSubscription != null) {
-      unawaited(notificationSubscription.cancel());
-    }
-    final portForwardSubscription = _portForwardChangeSubscriptions.remove(
-      connectionId,
-    );
-    if (portForwardSubscription != null) {
-      unawaited(portForwardSubscription.cancel());
-    }
+    unawaited(_portForwardChangeSubscriptions.remove(connectionId)?.cancel());
   }
 
   void _schedulePreviewStateRefresh() {

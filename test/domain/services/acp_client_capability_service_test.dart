@@ -85,6 +85,174 @@ void main() {
       expect(registry.requests, isEmpty);
     });
 
+    test('invalid permission selections leave the request retryable', () async {
+      transport.sendRequest('permission-1', 'session/request_permission', {
+        'sessionId': 'session-1',
+        'toolCall': {'toolCallId': 'call-1'},
+        'options': [
+          {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+        ],
+      });
+      await _settle();
+      final pending = registry.requests.single;
+
+      await expectLater(
+        service.selectPermission('s:permission-1', 'unknown'),
+        throwsArgumentError,
+      );
+      expect(registry.requests.single, same(pending));
+      expect(transport.responseForOrNull('permission-1'), isNull);
+      await service.selectPermission('s:permission-1', 'allow');
+      expect(transport.responseFor('permission-1')['result'], {
+        'outcome': {'outcome': 'selected', 'optionId': 'allow'},
+      });
+      expect(registry.requests, isEmpty);
+    });
+
+    for (final change in ['session', 'tool', 'option', 'method']) {
+      test(
+        'rejects a replay that changes the $change without rebinding',
+        () async {
+          final params = <String, Object?>{
+            'sessionId': 'session-1',
+            'toolCall': {'toolCallId': 'call-1'},
+            'options': [
+              {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+            ],
+          };
+          transport.sendRequest(
+            'replayed',
+            'session/request_permission',
+            params,
+          );
+          await _settle();
+          final original = registry.requests.single;
+          final originalResponder = original.request;
+          await service.detach();
+          final replayTransport = _ServerTransport();
+          final replayClient = AcpClient(
+            AcpJsonRpcConnection(transport: replayTransport),
+          );
+          addTearDown(replayClient.close);
+          service.attach(replayClient);
+          final changed = <String, Object?>{
+            ...params,
+            if (change == 'session') 'sessionId': 'session-2',
+            if (change == 'tool') 'toolCall': {'toolCallId': 'different-call'},
+            if (change == 'option')
+              'options': [
+                {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_always'},
+              ],
+          };
+          replayTransport.sendRequest(
+            'replayed',
+            change == 'method'
+                ? 'fs/write_text_file'
+                : 'session/request_permission',
+            change == 'method'
+                ? {
+                    'sessionId': 'session-1',
+                    'path': '/workspace/a',
+                    'content': 'x',
+                  }
+                : changed,
+          );
+          await _settle();
+
+          expect(replayTransport.responseFor('replayed')['error'], {
+            'code': -32000,
+            'message':
+                'Pending request ID was reused with different parameters',
+          });
+          expect(registry.requests.single, same(original));
+          expect(original.request, same(originalResponder));
+          await service.selectPermission('s:replayed', 'allow');
+          expect(transport.responseFor('replayed')['result'], isNotNull);
+          expect(files.writePaths, isEmpty);
+        },
+      );
+    }
+
+    for (final change in ['sessionId', 'path', 'content']) {
+      test('rejects a write replay that changes $change', () async {
+        final params = <String, Object?>{
+          'sessionId': 'session-1',
+          'path': '/workspace/a.txt',
+          'content': 'edited',
+        };
+        transport.sendRequest('write-1', 'fs/write_text_file', params);
+        await _settle();
+        final original = registry.requests.single;
+        final originalResponder = original.request;
+        await service.detach();
+        final replayTransport = _ServerTransport();
+        final replayClient = AcpClient(
+          AcpJsonRpcConnection(transport: replayTransport),
+        );
+        addTearDown(replayClient.close);
+        service.attach(replayClient);
+        replayTransport.sendRequest('write-1', 'fs/write_text_file', {
+          ...params,
+          change: change == 'path' ? '/workspace/b.txt' : 'different',
+        });
+        await _settle();
+
+        expect(replayTransport.responseFor('write-1')['error'], isNotNull);
+        expect(registry.requests.single, same(original));
+        expect(original.request, same(originalResponder));
+        expect(service.pendingWriteContent('s:write-1'), 'edited');
+        await service.approveWrite('s:write-1');
+        expect(files.writePaths, ['/workspace/a.txt']);
+        expect(utf8.decode(files.files['/workspace/a.txt']!), 'edited');
+        expect(transport.responseFor('write-1')['result'], isNull);
+      });
+    }
+
+    test(
+      'exact write replay at capacity preserves identity and byte budget',
+      () async {
+        final params = <String, Object?>{
+          'sessionId': 'session-1',
+          'path': '/workspace/a.txt',
+          'content': 'edited',
+        };
+        await service.close();
+        registry = AcpPendingRequestRegistry(
+          maxPendingRequests: 1,
+          maxPendingContentBytes: utf8.encode(jsonEncode(params)).length,
+        );
+        service = AcpClientCapabilityService(
+          fileSystem: files,
+          terminalExecutor: null,
+          allowedRoots: const ['/workspace'],
+          registry: registry,
+        )..attach(client);
+        transport.sendRequest('write-1', 'fs/write_text_file', params);
+        await _settle();
+        final original = registry.requests.single;
+        await service.detach();
+        final replayTransport = _ServerTransport();
+        final replayClient = AcpClient(
+          AcpJsonRpcConnection(transport: replayTransport),
+        );
+        addTearDown(replayClient.close);
+        service.attach(replayClient);
+        replayTransport.sendRequest('write-1', 'fs/write_text_file', params);
+        await _settle();
+        expect(registry.requests.single, same(original));
+        expect(replayTransport.responseForOrNull('write-1'), isNull);
+        await service.approveWrite('s:write-1');
+        expect(replayTransport.responseFor('write-1')['result'], isNull);
+        expect(transport.responseForOrNull('write-1'), isNull);
+        expect(registry.requests, isEmpty);
+
+        replayTransport.sendRequest('write-2', 'fs/write_text_file', params);
+        await _settle();
+        expect(registry.requests.single.id, 's:write-2');
+        await service.rejectWrite('s:write-2');
+      },
+    );
+
     test('keeps numeric and string JSON-RPC request IDs distinct', () async {
       Map<String, Object?> permission(String toolCallId) => {
         'sessionId': 'session-1',
@@ -206,6 +374,8 @@ void main() {
           ],
         });
         await _settle();
+        final pending = registry.requests.single;
+        final requestedAt = pending.requestedAt;
         await service.detach();
         expect(registry.requests, hasLength(1));
 
@@ -218,14 +388,17 @@ void main() {
           'permission-1',
           'session/request_permission',
           {
-            'sessionId': 'session-1',
-            'toolCall': {'toolCallId': 'call-1'},
+            // Object key order is not part of replay identity.
             'options': [
-              {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+              {'kind': 'allow_once', 'name': 'Allow', 'optionId': 'allow'},
             ],
+            'toolCall': {'toolCallId': 'call-1'},
+            'sessionId': 'session-1',
           },
         );
         await _settle();
+        expect(registry.requests.single, same(pending));
+        expect(pending.requestedAt, requestedAt);
 
         await service.selectPermission('s:permission-1', 'allow');
         expect(
@@ -434,7 +607,17 @@ void main() {
       'bounds aggregate pending write content and releases the budget',
       () async {
         await service.close();
-        registry = AcpPendingRequestRegistry(maxPendingContentBytes: 16);
+        registry = AcpPendingRequestRegistry(
+          maxPendingContentBytes: utf8
+              .encode(
+                jsonEncode({
+                  'sessionId': 'session-2',
+                  'path': '/workspace/three.txt',
+                  'content': 'abcdefghijkl',
+                }),
+              )
+              .length,
+        );
         service = AcpClientCapabilityService(
           fileSystem: files,
           terminalExecutor: terminals,
@@ -472,6 +655,45 @@ void main() {
         await _settle();
         expect(registry.requests, hasLength(1));
         expect(registry.requests.single.id, 's:write-budget-3');
+      },
+    );
+
+    test(
+      'permissions share the retained-content budget and release it',
+      () async {
+        final params = <String, Object?>{
+          'sessionId': 'session-1',
+          'toolCall': {'toolCallId': 'call-1', 'title': 'Inspect 🔒'},
+          'options': [
+            {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+          ],
+        };
+        await service.close();
+        registry = AcpPendingRequestRegistry(
+          maxPendingContentBytes: utf8.encode(jsonEncode(params)).length,
+        );
+        service = AcpClientCapabilityService(
+          fileSystem: null,
+          terminalExecutor: null,
+          allowedRoots: const [],
+          registry: registry,
+        )..attach(client);
+
+        transport.sendRequest('first', 'session/request_permission', params);
+        await _settle();
+        expect(registry.requests.single.id, 's:first');
+        transport.sendRequest('second', 'session/request_permission', params);
+        await _settle();
+        expect(registry.requests.single.id, 's:first');
+        expect(transport.responseFor('second')['result'], {
+          'outcome': {'outcome': 'cancelled'},
+        });
+
+        await service.selectPermission('s:first', 'allow');
+        transport.sendRequest('third', 'session/request_permission', params);
+        await _settle();
+        expect(registry.requests.single.id, 's:third');
+        expect(transport.responseForOrNull('third'), isNull);
       },
     );
 

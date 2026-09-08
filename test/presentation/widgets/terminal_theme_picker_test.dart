@@ -67,6 +67,32 @@ void main() {
       expect(previewedThemes, isEmpty);
     });
 
+    testWidgets('matches installed themes ignoring surrounding whitespace', (
+      tester,
+    ) async {
+      await _pumpPicker(
+        tester,
+        onThemeSelected: (_) {},
+        liveSchemeService: _FakeItermColorSchemeService(),
+      );
+
+      await tester.enterText(find.byType(TextField), ' dracula ');
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.widgetWithText(ThemePreviewCard, TerminalThemes.dracula.name),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(
+          ThemePreviewCard,
+          TerminalThemes.defaultDarkTheme.name,
+        ),
+        findsNothing,
+      );
+    });
+
     testWidgets('previews downloadable live themes in preview mode', (
       tester,
     ) async {

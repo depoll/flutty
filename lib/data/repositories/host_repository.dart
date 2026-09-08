@@ -37,58 +37,33 @@ class HostRepository {
   int get debugDecryptionCacheSize => _decryptCache.length;
 
   /// Get all hosts.
-  Future<List<Host>> getAll() async {
-    final hosts = await _orderedHostsQuery().get();
-    return Future.wait(hosts.map(_decryptHost));
-  }
+  Future<List<Host>> getAll() => _orderedHostsQuery().get().then(_decryptHosts);
 
   /// Watch all hosts.
   Stream<List<Host>> watchAll() =>
       _orderedHostsQuery().watch().asyncMap(_decryptHosts);
 
   /// Get hosts by group.
-  Future<List<Host>> getByGroup(int? groupId) {
-    if (groupId == null) {
-      return (_orderedHostsQuery()..where((h) => h.groupId.isNull()))
+  Future<List<Host>> getByGroup(int? groupId) =>
+      (_orderedHostsQuery()..where((h) => h.groupId.equalsNullable(groupId)))
           .get()
           .then(_decryptHosts);
-    }
-    return (_orderedHostsQuery()..where((h) => h.groupId.equals(groupId)))
-        .get()
-        .then(_decryptHosts);
-  }
 
   /// Watch hosts by group.
-  Stream<List<Host>> watchByGroup(int? groupId) {
-    if (groupId == null) {
-      return (_orderedHostsQuery()..where((h) => h.groupId.isNull()))
+  Stream<List<Host>> watchByGroup(int? groupId) =>
+      (_orderedHostsQuery()..where((h) => h.groupId.equalsNullable(groupId)))
           .watch()
           .asyncMap(_decryptHosts);
-    }
-    return (_orderedHostsQuery()..where((h) => h.groupId.equals(groupId)))
-        .watch()
-        .asyncMap(_decryptHosts);
-  }
 
   /// Get favorite hosts.
   Future<List<Host>> getFavorites() =>
-      (_db.select(_db.hosts)
-            ..where((h) => h.isFavorite.equals(true))
-            ..orderBy([
-              (h) => OrderingTerm.asc(h.sortOrder),
-              (h) => OrderingTerm.asc(h.id),
-            ]))
+      (_orderedHostsQuery()..where((h) => h.isFavorite.equals(true)))
           .get()
           .then(_decryptHosts);
 
   /// Watch favorite hosts.
   Stream<List<Host>> watchFavorites() =>
-      (_db.select(_db.hosts)
-            ..where((h) => h.isFavorite.equals(true))
-            ..orderBy([
-              (h) => OrderingTerm.asc(h.sortOrder),
-              (h) => OrderingTerm.asc(h.id),
-            ]))
+      (_orderedHostsQuery()..where((h) => h.isFavorite.equals(true)))
           .watch()
           .asyncMap(_decryptHosts);
 
@@ -188,20 +163,15 @@ class HostRepository {
   /// exactly rather than acting as SQL LIKE wildcards.
   Future<List<Host>> search(String query) {
     final escaped = escapeSqlLikeQuery(query);
-    return (_db.select(_db.hosts)
-          ..where(
-            (h) =>
-                h.label.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-                h.hostname.like(
-                  '%$escaped%',
-                  escapeChar: sqlLikeEscapeCharacter,
-                ) |
-                h.tags.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
-          )
-          ..orderBy([
-            (h) => OrderingTerm.asc(h.sortOrder),
-            (h) => OrderingTerm.asc(h.id),
-          ]))
+    return (_orderedHostsQuery()..where(
+          (h) =>
+              h.label.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
+              h.hostname.like(
+                '%$escaped%',
+                escapeChar: sqlLikeEscapeCharacter,
+              ) |
+              h.tags.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
+        ))
         .get()
         .then(_decryptHosts);
   }
@@ -267,6 +237,7 @@ class HostRepository {
             createdAt: const Value.absent(),
             updatedAt: const Value.absent(),
             lastConnectedAt: const Value(null),
+            portProxyName: const Value(null),
             sortOrder: const Value.absent(),
           ),
     );
@@ -337,12 +308,9 @@ class HostRepository {
 
   /// Toggle favorite status.
   Future<bool> toggleFavorite(int id) async {
-    final host = await getById(id);
-    if (host == null) return false;
-    return updateFields(
-      id,
-      HostsCompanion(isFavorite: Value(!host.isFavorite)),
-    );
+    final updated = await (_db.update(_db.hosts)..where((h) => h.id.equals(id)))
+        .write(HostsCompanion.custom(isFavorite: _db.hosts.isFavorite.not()));
+    return updated > 0;
   }
 
   /// Applies a partial column update to a single host.

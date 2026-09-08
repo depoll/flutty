@@ -68,13 +68,18 @@ class SshConnectionService : Service() {
             stopServiceUnlessStarting(context)
         }
 
-        private fun syncServiceState(context: Context) {
-            val status = latestStatus
-            if (status == null || status.connectionCount <= 0 || isAppForeground) {
-                stopServiceUnlessStarting(context)
-                return
+        /** The status to present, or null when the service must not run. */
+        private fun presentableStatus(context: Context): ConnectionStatus? {
+            val status = latestStatus ?: return null
+            if (status.connectionCount <= 0 || isAppForeground) {
+                return null
             }
-            if (!hasNotificationPermission(context)) {
+            return status.takeIf { hasNotificationPermission(context) }
+        }
+
+        private fun syncServiceState(context: Context) {
+            val status = presentableStatus(context)
+            if (status == null) {
                 stopServiceUnlessStarting(context)
                 return
             }
@@ -179,19 +184,8 @@ class SshConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun refreshPresentation() {
-        val status = Companion.latestStatus
-        if (status == null || status.connectionCount <= 0 || Companion.isAppForeground) {
-            hidePresentation()
-            stopSelf()
-            return
-        }
-        if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                this,
-                android.Manifest.permission.POST_NOTIFICATIONS,
-            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
+        val status = Companion.presentableStatus(this)
+        if (status == null) {
             hidePresentation()
             stopSelf()
             return
@@ -286,12 +280,7 @@ class SshConnectionService : Service() {
     private fun hidePresentation() {
         val manager = getSystemService(NotificationManager::class.java)
         if (isPresenting) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-            } else {
-                @Suppress("DEPRECATION")
-                stopForeground(true)
-            }
+            stopForeground(STOP_FOREGROUND_REMOVE)
             isPresenting = false
         }
         manager.cancel(NOTIFICATION_ID)

@@ -7,7 +7,7 @@ import subprocess
 
 
 PLATFORMS = ('android', 'ios', 'macos', 'windows', 'linux')
-OUTPUTS = ('run_check', 'go', 'tooling', 'native_files', *PLATFORMS)
+OUTPUTS = ('run_check', 'go', 'tooling', *PLATFORMS)
 PAYLOAD_SCRIPTS = {
     'scripts/build_monkeymux_assets.sh',
     'scripts/ensure_monkeymux_assets.sh',
@@ -81,14 +81,6 @@ def classify(paths):
         result['run_check'] |= (
             global_build or native or path.endswith('.dart')
             or path == 'analysis_options.yaml' or path.startswith('web/')
-        )
-        result['native_files'] |= (
-            path.startswith(('ios/Runner/', 'macos/Runner/'))
-            or path in {
-                'test/scripts/run_swift_native_tests.sh',
-                'test/scripts/sync_vault_file_io_test.swift',
-                '.github/workflows/ci.yml', 'scripts/ci_changes.py',
-            }
         )
     return result
 

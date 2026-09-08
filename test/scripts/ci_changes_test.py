@@ -67,12 +67,10 @@ class ClassificationTest(unittest.TestCase):
                 result = self.assert_platforms([path], changes.PLATFORMS)
                 self.assertTrue(result['go'])
 
-    def test_native_file_helpers_and_their_tests_keep_swift_coverage(self):
-        for path in ['ios/Runner/SyncVaultFileIO.swift', 'macos/Runner/SyncVaultFileIO.swift',
-                     'test/scripts/run_swift_native_tests.sh',
-                     'test/scripts/sync_vault_file_io_test.swift']:
-            self.assertTrue(changes.classify([path])['native_files'])
-        self.assertFalse(changes.classify(['lib/main.dart'])['native_files'])
+    def test_vendored_terminal_inputs_keep_test_coverage(self):
+        for path in ['third_party/xterm/pubspec.yaml', 'third_party/xterm/pubspec.lock',
+                     'third_party/xterm/lib/src/terminal.dart']:
+            self.assertTrue(changes.classify([path])['run_check'])
 
 
 class GitDiffTest(unittest.TestCase):
@@ -157,12 +155,12 @@ class WorkflowContractsTest(unittest.TestCase):
                 self.assertIn('remote/monkeymux/**', triggers[event]['paths'])
                 self.assertIn('third_party/**', triggers[event]['paths'])
 
-    def test_gate_waits_for_independent_tooling_and_native_checks(self):
+    def test_gate_waits_for_independent_tooling_and_terminal_checks(self):
         jobs = self.workflows['ci.yml']['jobs']
         self.assertIn('tooling', jobs['ci']['needs'])
-        self.assertIn('native-file-tests', jobs['ci']['needs'])
+        self.assertIn('terminal-test', jobs['ci']['needs'])
         self.assertEqual(jobs['tooling']['needs'], 'changes')
-        self.assertNotIn('monkeymux-assets', jobs['native-file-tests']['needs'])
+        self.assertNotIn('monkeymux-assets', jobs['terminal-test']['needs'])
 
     def test_payload_cache_can_only_be_saved_by_push_to_main_ci(self):
         for filename, workflow in self.workflows.items():

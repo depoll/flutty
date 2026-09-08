@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:collection/collection.dart';
 import 'package:dartssh2/dartssh2.dart';
 
 import '../models/acp_client_capabilities.dart';
@@ -279,7 +280,7 @@ final class AcpLimitExceededException extends AcpClientCapabilityException {
 /// grow local memory without limit: once [maxPendingRequests] outstanding new
 /// requests or [maxPendingContentBytes] of provider content are retained,
 /// [register] refuses further brand-new requests (a rebind of an already
-/// tracked request id is always accepted).
+/// tracked request is accepted only when its method and parameters match).
 final class AcpPendingRequestRegistry {
   /// Creates a pending-request registry.
   AcpPendingRequestRegistry({
@@ -315,18 +316,24 @@ final class AcpPendingRequestRegistry {
   /// request unanswered.
   T? register<T extends AcpPendingClientRequest>(T pending) {
     final existing = _requests[pending.id];
-    if (existing != null && existing.runtimeType == pending.runtimeType) {
+    if (existing != null) {
+      if (existing.runtimeType != pending.runtimeType ||
+          existing.request.method != pending.request.method ||
+          !const DeepCollectionEquality().equals(
+            existing.request.params,
+            pending.request.params,
+          )) {
+        throw const AcpClientCapabilityException(
+          'Pending request ID was reused with different parameters',
+        );
+      }
       existing.request = pending.request;
       _emit();
       return existing as T;
     }
-    if (existing == null && _requests.length >= maxPendingRequests) {
-      return null;
-    }
+    if (_requests.length >= maxPendingRequests) return null;
     final nextContentBytes =
-        _pendingContentBytes -
-        (existing?.retainedContentBytes ?? 0) +
-        pending.retainedContentBytes;
+        _pendingContentBytes + pending.retainedContentBytes;
     if (nextContentBytes > maxPendingContentBytes) {
       return null;
     }
@@ -599,8 +606,10 @@ final class AcpClientCapabilityService {
     if (pending is! AcpPendingPermission) {
       throw StateError('No pending permission for request');
     }
+    // Validation is synchronous. Keep an unanswered request if it fails.
+    final response = pending.select(optionId);
     try {
-      await pending.select(optionId);
+      await response;
     } finally {
       registry.remove(requestId);
     }
