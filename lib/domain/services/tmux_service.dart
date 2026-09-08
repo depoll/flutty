@@ -4375,7 +4375,8 @@ flutty_codex_resume_id() {
 {
   for (i = 1; i < NF; i++) {
     if (\$i == "resume") {
-      print \$(i + 1)
+      value = \$(i + 1)
+      if (value !~ /^-/ && value ~ /^[A-Za-z0-9._-]+\$/) print value
       exit
     }
   }
@@ -4659,15 +4660,12 @@ flutty_codex_logs_resume_match() {
 flutty_codex_recent_session_match() {
   process_cwd=\$1
   process_start_epoch=\$2
-  pid=\$3
   [ -n "\$process_cwd" ] || return 0
   case "\$process_start_epoch" in ''|*[!0-9]*) return 0 ;; esac
   [ -d "\$home/.codex/sessions" ] || return 0
-  logs_match=\$(flutty_codex_logs_resume_match "\$process_cwd" "\$process_start_epoch" "\$pid")
-  if [ -n "\$logs_match" ]; then
-    printf '%s\\n' "\$logs_match"
-    return 0
-  fi
+  # Never assign one cwd-based guess to multiple live Codex panes.
+  cwd_pane_count=\$(printf '%s\\n' "\$codex_pane_cwds" | awk -F "\$sep" -v cwd="\$process_cwd" '\$2 == cwd && !seen[\$1]++ { count++ } END { print count + 0 }')
+  [ "\$cwd_pane_count" -eq 1 ] || return 0
   index_match=\$(flutty_codex_index_resume_match "\$process_cwd" "\$process_start_epoch")
   if [ -n "\$index_match" ]; then
     printf '%s\\n' "\$index_match"
@@ -4765,6 +4763,27 @@ flutty_lsof_session_match() {
 }
 if [ -n "\${ps_output:-}" ]; then
   agent_rows=\$(printf '%s\\n' "\$ps_output" | awk -v panes="\$pane_pids" -v sep="\$sep" '
+# Match executable names, not shell commands, install directories, or prompts.
+function basename(value) {
+  sub(/^.*\\//, "", value)
+  return tolower(value)
+}
+function is_codex(args,    argv, count, executable, i) {
+  count = split(args, argv, /[[:space:]]+/)
+  executable = basename(argv[1])
+  if (executable == "node" || executable == "bun") {
+    i = 2
+    while (i <= count && argv[i] ~ /^-/) i++
+    executable = basename(argv[i])
+    if (executable != "codex.js") return 0
+  } else if (executable != "codex" && executable != "codex-cli" && executable != "codex.js") {
+    return 0
+  }
+  for (i = 2; i <= count; i++) {
+    if (argv[i] == "app-server") return 0
+  }
+  return 1
+}
 BEGIN {
   split(panes, pane_values, " ")
   for (i in pane_values) {
@@ -4785,9 +4804,9 @@ BEGIN {
 END {
   for (pid in parent) {
     tool = ""
-    if (command[pid] ~ /(^|[\\/@[:space:]])claude([\\/._[:space:]-]|\$)/) tool = "claude"
+    if (is_codex(raw_command[pid])) tool = "codex"
+    else if (command[pid] ~ /(^|[\\/@[:space:]])claude([\\/._[:space:]-]|\$)/) tool = "claude"
     else if (command[pid] ~ /(^|[\\/@[:space:]])copilot([\\/._[:space:]-]|\$)/) tool = "copilot"
-    else if (command[pid] ~ /(^|[\\/@[:space:]])codex([\\/._[:space:]-]|\$)/) tool = "codex"
     else if (command[pid] ~ /(^|[\\/@[:space:]])opencode([\\/._[:space:]-]|\$)/) tool = "opencode"
     else if (command[pid] ~ /(^|[\\/@[:space:]])(agy|antigravity|antigravity-cli)([\\/._[:space:]-]|\$)/) tool = "antigravity"
     if (tool == "") continue
@@ -4805,6 +4824,11 @@ END {
     }
   }
 }')
+  codex_pane_cwds=\$(printf '%s\\n' "\$agent_rows" | while IFS="\$sep" read -r pane_pid pid tool command_text; do
+    [ "\$tool" = codex ] || continue
+    cwd=\$(flutty_process_cwd "\$pid")
+    [ -n "\$cwd" ] && printf '%s%s%s\\n' "\$pane_pid" "\$sep" "\$cwd"
+  done)
   printf '%s\\n' "\$agent_rows" | while IFS="\$sep" read -r pane_pid pid tool command_text; do
       case "\$pane_pid" in ''|*[!0-9]*) continue ;; esac
       case "\$pid" in ''|*[!0-9]*) continue ;; esac
@@ -4825,6 +4849,7 @@ END {
         if [ -n "\$lsof_match" ]; then
           session_id=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$1; exit }')
           title=\$(printf '%s' "\$lsof_match" | awk -F "\$sep" '{ print \$2; exit }')
+          if [ "\$tool" = codex ]; then confidence=high; fi
         fi
       fi
       if [ -z "\$session_id" ]; then
@@ -4833,7 +4858,22 @@ END {
           process_start_epoch=\$(flutty_process_start_epoch "\$pid")
         fi
         case "\$tool" in
-          codex) recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" "\$pid" || true) ;;
+          codex)
+            recent_match=\$(flutty_codex_logs_resume_match "\$process_cwd" "\$process_start_epoch" "\$pid" || true)
+            confidence=high
+            if [ -z "\$recent_match" ]; then
+              # Resume arguments beat cwd guesses, but may be stale after /resume.
+              session_id=\$(flutty_codex_resume_id "\$command_text")
+              if [ -n "\$session_id" ]; then
+                confidence=medium
+                rollout_file=\$(find "\$home/.codex/sessions" -name "*\$session_id*.jsonl" -type f -print -quit 2>/dev/null)
+                recent_match=\$(flutty_emit_lsof_match "\$session_id" "\$(flutty_codex_session_title "\$rollout_file" "\$session_id")")
+              else
+                recent_match=\$(flutty_codex_recent_session_match "\$process_cwd" "\$process_start_epoch" || true)
+                confidence=low
+              fi
+            fi
+            ;;
           antigravity) recent_match=\$(flutty_antigravity_recent_session_match "\$process_cwd" "\$process_start_epoch" || true) ;;
           *) recent_match= ;;
         esac
