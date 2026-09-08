@@ -691,13 +691,17 @@ func (b *acpBridge) readProviderOutput(stdout io.Reader) {
 }
 
 func readBoundedAcpLine(reader *bufio.Reader) ([]byte, error) {
+	return readBoundedProtocolLine(reader, acpMaxFrameBytes)
+}
+
+func readBoundedProtocolLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	var line []byte
 	for {
 		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > acpMaxFrameBytes {
+		if len(line)+len(fragment) > limit {
 			// Every caller terminates this stream on an oversized frame. Draining
 			// to a newline could block forever on a peer that stops sending.
-			return nil, errors.New("ACP frame exceeds limit")
+			return nil, errors.New("protocol frame exceeds limit")
 		}
 		line = append(line, fragment...)
 		if !errors.Is(err, bufio.ErrBufferFull) {
@@ -1097,37 +1101,22 @@ func (b *acpBridge) trimReplayLocked() {
 		return
 	}
 	remainingEvents := len(b.replay)
-	remainingBytes := b.replayBytes
-	remove := make([]bool, len(b.replay))
-	removed := 0
-	for index, event := range b.replay {
+	kept := 0
+	for _, event := range b.replay {
 		overLimit := remainingEvents > acpReplayMaxEvents ||
-			(remainingBytes > acpReplayMaxBytes && remainingEvents > 1)
-		if !overLimit {
-			break
-		}
-		if event.pendingID != "" {
+			(b.replayBytes > acpReplayMaxBytes && remainingEvents > 1)
+		// Unresolved provider requests must survive detachment verbatim.
+		if overLimit && event.pendingID == "" {
+			remainingEvents--
+			b.replayBytes -= event.bytes
 			continue
 		}
-		remove[index] = true
-		removed++
-		remainingEvents--
-		remainingBytes -= event.bytes
+		b.replay[kept] = event
+		kept++
 	}
-	if removed == 0 {
-		// Active provider requests (notably permissions) have to survive
-		// detachment verbatim. They are still memory-only and are released
-		// as soon as the app sends the matching response.
-		return
-	}
-	kept := make([]acpReplayEvent, 0, remainingEvents)
-	for index, event := range b.replay {
-		if !remove[index] {
-			kept = append(kept, event)
-		}
-	}
-	b.replay = kept
-	b.replayBytes = remainingBytes
+	// Reuse the event array without retaining evicted payloads in its tail.
+	clear(b.replay[kept:])
+	b.replay = b.replay[:kept]
 }
 
 func (b *acpBridge) releasePendingReplayLocked(id string) {
@@ -1464,18 +1453,8 @@ func (b *acpBridge) enqueue(client *acpBridgeClient, message acpWireMessage) {
 	if !attached || current != client {
 		return
 	}
-	select {
-	case <-client.done:
-		return
-	default:
-	}
-	select {
-	case <-client.done:
-		return
-	case client.send <- message:
-	default:
-		// A slow SSH client must not block the provider or unbound the replay
-		// buffer. It can reconnect and resume from its last ACK.
+	if !tryEnqueueAcpClient(client, message) {
+		// A slow SSH client can reconnect and resume from its last ACK.
 		b.detachClient(client.id)
 	}
 }

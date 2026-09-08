@@ -324,6 +324,9 @@ func (p *winProcess) Hangup() {
 
 // startWindow launches cmd attached to a new ConPTY sized to cols x rows.
 func startWindow(cmd *exec.Cmd, cols int, rows int) (muxPty, muxProcess, error) {
+	if cmd.Err != nil {
+		return nil, nil, cmd.Err
+	}
 	if cols <= 0 {
 		cols = defaultColumns
 	}

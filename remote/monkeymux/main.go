@@ -59,10 +59,11 @@ type muxProcess interface {
 }
 
 const (
-	monkeyMuxVersion                  = "0.1.187"
+	monkeyMuxVersion                  = "0.1.188"
 	defaultColumns                    = 80
 	defaultRows                       = 24
 	maxTitleBytes                     = 160
+	controlMaxFrameBytes              = 1024 * 1024
 	piSessionMetadataRecordLimitBytes = 1024 * 1024
 	piSessionHeaderScanLimitBytes     = 1024 * 1024
 	piSessionActivityMatchTolerance   = 15 * time.Second
@@ -6324,6 +6325,9 @@ func (s *muxServer) createWindow(options createWindowOptions) (*muxWindow, error
 		s.mu.Unlock()
 		proc.Hangup()
 		_ = windowPty.Close()
+		// No watcher owns this child. Reap it without blocking rejection on a
+		// process that ignores hangup; Windows Wait also releases its handle.
+		go func() { _ = proc.Wait() }()
 		return nil, errServerClosed
 	}
 	// Registering the watchers here, rather than beside the `go` statements
@@ -6806,7 +6810,7 @@ func (s *muxServer) markWindowClosed(windowID string) {
 
 func (s *muxServer) handleConnection(conn net.Conn) {
 	reader := bufio.NewReader(conn)
-	line, err := reader.ReadBytes('\n')
+	line, err := readBoundedProtocolLine(reader, controlMaxFrameBytes)
 	if err != nil {
 		_ = conn.Close()
 		return
@@ -8414,14 +8418,6 @@ func (s *muxServer) handleAttach(conn net.Conn, reader *bufio.Reader, hello cont
 		s.resizeMu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
-	if s.closed {
-		s.attachViewportTransitionWindowID = ""
-		s.mu.Unlock()
-		s.attachMu.Unlock()
-		s.resizeMu.Unlock()
-		client.close()
-		return
-	}
 	if s.attachClients == nil {
 		s.attachClients = map[net.Conn]*attachClient{}
 	}
@@ -8553,7 +8549,14 @@ func (s *muxServer) runAttachInputActions(client *attachClient) {
 
 func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 	client := newControlClient(conn)
-	s.addControl(client)
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
+	s.controls[client] = struct{}{}
+	s.mu.Unlock()
 	defer func() {
 		client.close()
 		s.removeControl(client)
@@ -8576,7 +8579,7 @@ func (s *muxServer) handleControl(conn net.Conn, reader *bufio.Reader) {
 	})
 
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), controlMaxFrameBytes)
 	for scanner.Scan() {
 		var request controlMessage
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
@@ -8798,12 +8801,6 @@ func (s *muxServer) handleControlRequest(client *controlClient, request controlM
 	default:
 		client.sendError(request, fmt.Errorf("unsupported command %q", request.Type))
 	}
-}
-
-func (s *muxServer) addControl(client *controlClient) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.controls[client] = struct{}{}
 }
 
 func (s *muxServer) removeControl(client *controlClient) {
