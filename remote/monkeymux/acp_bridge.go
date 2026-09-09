@@ -1215,7 +1215,7 @@ func (b *acpBridge) handleAttach(
 	}
 	canSend := b.writerClientID == clientID
 	b.lastActivity = time.Now()
-	replay := append([]acpReplayEvent(nil), b.replay...)
+	replay := b.replay
 	retainedFrom := b.nextSequence + 1
 	if len(replay) > 0 {
 		retainedFrom = replay[0].message.Sequence
@@ -1695,7 +1695,7 @@ func writeAcpWireFrame(writer io.Writer, message acpWireMessage) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > acpMaxFrameBytes {
+	if len(data)+1 > acpMaxFrameBytes {
 		return errors.New("ACP bridge frame exceeds limit")
 	}
 	_, err = writer.Write(append(data, '\n'))

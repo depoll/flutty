@@ -1008,7 +1008,7 @@ func TestDiscoverPiSessionsHonorsProcessSessionDir(t *testing.T) {
 	}}}
 
 	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
-	if want := filepath.Join(normalizedPiWorkingDirectory(project), ".sessions"); got.sessionID != "custom-session" || got.sessionDir != want {
+	if want := filepath.Join(normalizedWorkingDirectory(project), ".sessions"); got.sessionID != "custom-session" || got.sessionDir != want {
 		t.Fatalf("custom-dir Pi session = %#v, want custom session in %q", got, want)
 	}
 	options := createWindowOptionsForRestore(restoreWindowState{
@@ -1038,7 +1038,7 @@ func TestDiscoverPiSessionsReservesExplicitProcessSession(t *testing.T) {
 		PanePid: 100, CurrentCommand: "pi", AgentTool: "pi", Cwd: project,
 	}}}
 	got := discoverPiSessions(restore, processes, map[int]struct{}{100: {}})[0]
-	if want := filepath.Join(normalizedPiWorkingDirectory(project), "sessions"); got.sessionID != "exact-session" || got.sessionDir != want || got.sessionPath != filepath.Join(want, "exact.jsonl") {
+	if want := filepath.Join(normalizedWorkingDirectory(project), "sessions"); got.sessionID != "exact-session" || got.sessionDir != want || got.sessionPath != filepath.Join(want, "exact.jsonl") {
 		t.Fatalf("explicit Pi session = %#v, want exact-session in %q", got, want)
 	}
 
@@ -1067,7 +1067,7 @@ func TestPiSessionRootUsesProjectThenGlobalSettings(t *testing.T) {
 	if err := os.WriteFile(projectSettings, []byte(`{"sessionDir":".project-sessions"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := piSessionRootForWorkingDirectory(project), filepath.Join(normalizedPiWorkingDirectory(project), ".project-sessions"); got != want {
+	if got, want := piSessionRootForWorkingDirectory(project), filepath.Join(normalizedWorkingDirectory(project), ".project-sessions"); got != want {
 		t.Fatalf("project sessionDir = %q, want %q", got, want)
 	}
 	if err := os.Remove(projectSettings); err != nil {
@@ -1086,7 +1086,7 @@ func TestReadPiSessionEntrySkipsLeadingNonHeaderLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry, ok := readPiSessionEntry(path)
-	if !ok || entry.sessionID != "session-id" || entry.cwd != normalizedPiWorkingDirectory(project) {
+	if !ok || entry.sessionID != "session-id" || entry.cwd != normalizedWorkingDirectory(project) {
 		t.Fatalf("Pi session entry = %#v, %v", entry, ok)
 	}
 }

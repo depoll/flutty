@@ -161,5 +161,70 @@ class ProCaptionTest(unittest.TestCase):
                         validate._validate_ocr_content([path])
 
 
+class CaptureLaunchTest(unittest.TestCase):
+    def test_ansi_strips_complete_osc_sequences(self):
+        for sequence in ('\x1b]0;hidden title\x07', '\x1b]7;file:///hidden/path\x1b\\'):
+            with self.subTest(sequence=sequence):
+                self.assertEqual(capture._strip_terminal_output(sequence + '\x1b[32mvisible\x1b[0m'), 'visible')
+
+    def test_control_hello_timeout_closes_process_and_reader(self):
+        from unittest.mock import Mock
+        process = Mock()
+        process.poll.return_value = None
+        with patch.object(capture.subprocess, 'Popen', return_value=process), \
+             patch.object(capture.threading, 'Thread') as thread, \
+             patch.object(capture._MonkeyMuxControl, '_wait_for_hello', side_effect=RuntimeError('hello timeout')):
+            with self.assertRaisesRegex(RuntimeError, 'hello timeout'):
+                capture._MonkeyMuxControl(Path('/test/monkeymux'), 'demo', {})
+        process.stdin.close.assert_called_once()
+        process.send_signal.assert_called_once_with(capture.signal.SIGTERM)
+        process.wait.assert_called_once_with(timeout=2)
+        thread.return_value.join.assert_called_once_with(timeout=1)
+
+    def test_shared_flutter_launch_configuration(self):
+        from types import SimpleNamespace
+        demo = SimpleNamespace(port=2223, username='demo', private_key_b64='key',
+                               host_key_b64='host', host_key_fingerprint='fingerprint',
+                               mux_session='demo', demo_dir=Path('/demo'))
+        with patch.object(capture, '_java_home_17', return_value='/jdk17'):
+            env = capture._flutter_environment()
+        self.assertEqual(env['JAVA_HOME'], '/jdk17')
+        for target in capture.TARGETS.values():
+            with self.subTest(target=target.name), \
+                 patch.object(capture, '_build_android_screenshot_apk', return_value=Path('/app.apk')) as build:
+                defines = capture._capture_defines(target, demo)
+                self.assertEqual(len(defines), 10)
+                self.assertIn(f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}', defines)
+                self.assertIn('--dart-define=STORE_SCREENSHOT_SSH_PORT=2223', defines)
+                self.assertIn('--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH=/demo', defines)
+                command = capture._flutter_command(target, 'device', env, defines)
+                if target.platform == 'android':
+                    self.assertEqual(command, ['flutter', 'run', '-d', 'device', '--use-application-binary', '/app.apk', '--no-pub'])
+                    build.assert_called_once_with(env, defines)
+                else:
+                    self.assertEqual(command, ['flutter', 'run', '--debug', '-d', 'device', '-t', 'tool/store_screenshot_app.dart', *defines, '--flavor', 'production'])
+                    build.assert_not_called()
+
+    def test_capture_consumes_markers_and_terminates_flutter(self):
+        from unittest.mock import Mock
+        demo = Mock(demo_image_b64='image')
+        process = Mock(stdout=iter([
+            capture.READY_MARKER + '{"paths":["capture.png"],"scene":"hosts"}\n',
+            capture.DONE_MARKER + '\n',
+        ]))
+        with patch.object(capture, '_flutter_environment', return_value={}), \
+             patch.object(capture, '_capture_defines', return_value=[]), \
+             patch.object(capture, '_flutter_command', return_value=['flutter']) as command, \
+             patch.object(capture.subprocess, 'Popen', return_value=process), \
+             patch.object(capture, '_capture_native_screenshot') as screenshot, \
+             patch.object(capture, '_terminate_process') as terminate, \
+             patch.object(capture.time, 'sleep'):
+            target = capture.TARGETS['ios_phone']
+            capture._run_flutter_capture(target, 'device', demo, scene='hosts')
+        screenshot.assert_called_once_with(target=target, device_id='device', paths=[ROOT / 'capture.png'], scene='hosts')
+        self.assertIn('--dart-define=STORE_SCREENSHOT_SCENE=hosts', command.call_args.args[3])
+        terminate.assert_called_once_with(process, timeout=20)
+
+
 if __name__ == '__main__':
     unittest.main()

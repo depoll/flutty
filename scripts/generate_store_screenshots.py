@@ -36,7 +36,7 @@ READY_MARKER = 'STORE_SCREENSHOT_READY '
 DONE_MARKER = 'STORE_SCREENSHOT_DONE'
 ERROR_MARKER = 'STORE_SCREENSHOT_ERROR '
 ANSI_ESCAPE_PATTERN = re.compile(
-    r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\))'
+    r'\x1B(?:\][^\x07\x1B]*(?:\x07|\x1B\\)|\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])'
 )
 KEY_BYTES = {
     'Enter': '\r',
@@ -193,19 +193,17 @@ def _run_target(
             restore_android()
 
 
-def _run_flutter_capture(
-    target: ScreenshotTarget,
-    device_id: str,
-    demo: StoreDemoEnvironment,
-    *,
-    scene: str | None = None,
-) -> None:
+def _flutter_environment() -> dict[str, str]:
     env = os.environ.copy()
     java_home = _java_home_17()
     if java_home:
         env['JAVA_HOME'] = java_home
 
-    dart_defines = [
+    return env
+
+
+def _capture_defines(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> list[str]:
+    return [
         f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
         f'--dart-define=STORE_SCREENSHOT_SSH_PORT={demo.port}',
         f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={demo.username}',
@@ -215,15 +213,28 @@ def _run_flutter_capture(
         f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={demo.mux_session}',
         f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={demo.demo_dir}',
         '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
-        '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
         '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
-    if scene is not None:
-        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
-    if demo.demo_image_b64:
-        dart_defines.append(
-            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
-        )
+
+
+def _flutter_command(
+    target: ScreenshotTarget,
+    device_id: str,
+    env: dict[str, str],
+    dart_defines: list[str],
+) -> list[str]:
+    if target.platform == 'android':
+        apk_path = _build_android_screenshot_apk(env, dart_defines)
+        return [
+            'flutter',
+            'run',
+            '-d',
+            device_id,
+            '--use-application-binary',
+            str(apk_path),
+            '--no-pub',
+        ]
+
     command = [
         'flutter',
         'run',
@@ -234,19 +245,28 @@ def _run_flutter_capture(
         'tool/store_screenshot_app.dart',
         *dart_defines,
     ]
-    if target.platform in ('android', 'ios'):
+    if target.platform == 'ios':
         command.extend(['--flavor', 'production'])
-    if target.platform == 'android':
-        apk_path = _build_android_screenshot_apk(env, dart_defines)
-        command = [
-            'flutter',
-            'run',
-            '-d',
-            device_id,
-            '--use-application-binary',
-            str(apk_path),
-            '--no-pub',
-        ]
+    return command
+
+
+def _run_flutter_capture(
+    target: ScreenshotTarget,
+    device_id: str,
+    demo: StoreDemoEnvironment,
+    *,
+    scene: str | None = None,
+) -> None:
+    env = _flutter_environment()
+    dart_defines = _capture_defines(target, demo)
+    dart_defines.append('--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true')
+    if scene is not None:
+        dart_defines.append(f'--dart-define=STORE_SCREENSHOT_SCENE={scene}')
+    if demo.demo_image_b64:
+        dart_defines.append(
+            f'--dart-define=STORE_SCREENSHOT_DEMO_IMAGE_B64={demo.demo_image_b64}',
+        )
+    command = _flutter_command(target, device_id, env, dart_defines)
 
     process = subprocess.Popen(
         command,
@@ -282,13 +302,7 @@ def _run_flutter_capture(
                 saw_done = True
                 break
     finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=20)
+        _terminate_process(process, timeout=20)
 
     if failure is not None:
         raise RuntimeError(f'{target.name} run failed in the app: {failure}')
@@ -726,53 +740,15 @@ class StoreDemoEnvironment:
             device_id = _android_device_id()
             restore_android = _configure_android_display(target, device_id)
 
-        env = os.environ.copy()
-        java_home = _java_home_17()
-        if java_home:
-            env['JAVA_HOME'] = java_home
-        dart_defines = [
-            f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
-            f'--dart-define=STORE_SCREENSHOT_SSH_PORT={self.port}',
-            f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={self.username}',
-            f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={self.private_key_b64}',
-            f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={self.host_key_b64}',
-            (
-                '--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT='
-                f'{self.host_key_fingerprint}'
-            ),
-            f'--dart-define=STORE_SCREENSHOT_MUX_SESSION={self.mux_session}',
-            f'--dart-define=STORE_SCREENSHOT_WORKSPACE_PATH={self.demo_dir}',
+        env = _flutter_environment()
+        dart_defines = _capture_defines(target, self) + [
             '--dart-define=STORE_SCREENSHOT_THEME_MODE=light',
             '--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_IMAGE=true',
             f'--dart-define=STORE_SCREENSHOT_LIGHT_DEMO_OUTPUT={output_path}',
-            '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
             '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
-            '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
             '--dart-define=STORE_SCREENSHOT_SCENE_HOLD_MS=1800',
         ]
-        command = [
-            'flutter',
-            'run',
-            '--debug',
-            '-d',
-            device_id,
-            '-t',
-            'tool/store_screenshot_app.dart',
-            '--flavor',
-            'production',
-            *dart_defines,
-        ]
-        if target.platform == 'android':
-            apk_path = _build_android_screenshot_apk(env, dart_defines)
-            command = [
-                'flutter',
-                'run',
-                '-d',
-                device_id,
-                '--use-application-binary',
-                str(apk_path),
-                '--no-pub',
-            ]
+        command = _flutter_command(target, device_id, env, dart_defines)
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -805,13 +781,7 @@ class StoreDemoEnvironment:
                     saw_done = True
                     break
         finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=20)
+            _terminate_process(process, timeout=20)
             if restore_android is not None:
                 restore_android()
 
@@ -1481,7 +1451,11 @@ class _MonkeyMuxControl:
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._counter = 0
         self._reader.start()
-        self._wait_for_hello()
+        try:
+            self._wait_for_hello()
+        except BaseException:
+            self.close()
+            raise
 
     def request(
         self,
