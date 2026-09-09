@@ -11,7 +11,9 @@ import '../models/tmux_state.dart';
 import 'acp_client.dart';
 import 'acp_json_rpc_connection.dart';
 import 'acp_ssh_exec_transport.dart';
+import 'command_output_marker_reader.dart';
 import 'diagnostics_log_service.dart';
+import 'remote_file_service.dart' show shellEscapePosix;
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'terminal_connection_backend_service.dart';
@@ -1069,28 +1071,6 @@ int? _readJsonNumberFromRaw(String raw, String key) {
   return int.tryParse(match.group(1)!);
 }
 
-/// Parses ACP `session/list` responses into unified session metadata.
-@visibleForTesting
-List<ToolSessionInfo> parseAcpSessionListResult(
-  String toolName,
-  Map<String, dynamic> result,
-) {
-  final parsed = AcpSessionListResult.fromJson(result);
-  final sessions = <ToolSessionInfo>[];
-  for (final session in parsed.sessions) {
-    sessions.add(
-      ToolSessionInfo(
-        toolName: toolName,
-        sessionId: session.sessionId,
-        workingDirectory: session.cwd.isEmpty ? null : session.cwd,
-        lastActive: _parseDateTimeValue(session.updatedAt),
-        summary: session.title ?? _truncateSessionIdValue(session.sessionId),
-      ),
-    );
-  }
-  return sessions;
-}
-
 /// Parses OpenCode's JSON storage session metadata from
 /// `storage/session/<project>/<session>.json`.
 @visibleForTesting
@@ -1254,18 +1234,25 @@ String normalizeWorkingDirectoryForComparison(String value) {
       : normalized;
 }
 
+String _workingDirectoryPrefix(String path) =>
+    path.endsWith('/') ? path : '$path/';
+
 String? _relativeWorkingDirectoryPath(String child, String root) {
   if (child == root) return '';
-  final prefix = '$root/';
+  final prefix = _workingDirectoryPrefix(root);
   if (!child.startsWith(prefix)) return null;
   return child.substring(prefix.length);
 }
 
 String _joinWorkingDirectoryPath(String root, String relativePath) =>
-    relativePath.isEmpty ? root : '$root/$relativePath';
+    relativePath.isEmpty
+    ? root
+    : '${_workingDirectoryPrefix(root)}$relativePath';
 
 bool _workingDirectoriesOverlap(String a, String b) =>
-    a == b || a.startsWith('$b/') || b.startsWith('$a/');
+    a == b ||
+    a.startsWith(_workingDirectoryPrefix(b)) ||
+    b.startsWith(_workingDirectoryPrefix(a));
 
 /// Parses `git worktree list --porcelain` output into root paths.
 @visibleForTesting
@@ -1822,84 +1809,32 @@ class AgentSessionDiscoveryService {
     required String? toolName,
     required bool previewOnly,
   }) {
-    final effectiveMaxPerTool = previewOnly ? 1 : maxPerTool;
-    return toolName == null
-        ? [
-            _discoverOpenCodeSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              useAcp: false,
-              previewOnly: previewOnly,
-            ),
-            _discoverCodexSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverCopilotSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              useAcp: false,
-              previewOnly: previewOnly,
-            ),
-            _discoverClaudeSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverAntigravitySessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverCursorSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverPiSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverHermesSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
-            _discoverGrokSessions(
-              session,
-              workingDirectory,
-              relatedWorkingDirectories,
-              effectiveMaxPerTool,
-              previewOnly: previewOnly,
-            ),
+    final tools = toolName == null
+        ? const [
+            'OpenCode',
+            'Codex',
+            'Copilot CLI',
+            'Claude Code',
+            'Antigravity',
+            'Cursor Agent',
+            'Pi',
+            'Hermes',
+            'Grok Build',
           ]
-        : [
-            _discoverSessionsForTool(
-              toolName,
-              session,
-              workingDirectory: workingDirectory,
-              relatedWorkingDirectories: relatedWorkingDirectories,
-              maxPerTool: effectiveMaxPerTool,
-            ),
-          ];
+        : [toolName];
+    return tools
+        .map(
+          (name) => _discoverSessionsForTool(
+            name,
+            session,
+            workingDirectory: workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+            maxPerTool: previewOnly ? 1 : maxPerTool,
+            previewOnly: toolName == null && previewOnly,
+            useAcp: toolName != null,
+          ),
+        )
+        .toList();
   }
 
   Future<_ToolDiscoveryResult> _discoverSessionsForTool(
@@ -1908,60 +1843,73 @@ class AgentSessionDiscoveryService {
     required String? workingDirectory,
     required List<String> relatedWorkingDirectories,
     required int maxPerTool,
+    required bool previewOnly,
+    required bool useAcp,
   }) => switch (toolName) {
     'OpenCode' => _discoverOpenCodeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
+      useAcp: useAcp,
     ),
     'Codex' => _discoverCodexSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Copilot CLI' => _discoverCopilotSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
+      useAcp: useAcp,
     ),
     'Claude Code' => _discoverClaudeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Antigravity' => _discoverAntigravitySessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Cursor Agent' => _discoverCursorSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Pi' => _discoverPiSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Hermes' => _discoverHermesSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     'Grok Build' => _discoverGrokSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
+      previewOnly: previewOnly,
     ),
     _ => Future<_ToolDiscoveryResult>.value(
       _ToolDiscoveryResult.success(toolName, const <ToolSessionInfo>[]),
@@ -2117,7 +2065,7 @@ class AgentSessionDiscoveryService {
 
     final dir = info.workingDirectory;
     if (dir != null && dir.isNotEmpty && !_looksLikeWindowsPath(dir)) {
-      return 'cd ${_shellQuote(dir)} && $resume';
+      return 'cd ${shellEscapePosix(dir)} && $resume';
     }
     return resume;
   }
@@ -3246,7 +3194,7 @@ print(json.dumps(sessions))
         );
       } else {
         final roots = scopedDirectoryNames
-            .map((name) => r'"$GROK_SESSIONS_ROOT"/' + _shellQuote(name))
+            .map((name) => r'"$GROK_SESSIONS_ROOT"/' + shellEscapePosix(name))
             .join(' ');
         output = await _exec(
           session,
@@ -3487,9 +3435,9 @@ print(json.dumps(sessions))
         r'NODE_BIN=$(command -v node 2>/dev/null); '
         r'[ -n "$NODE_BIN" ] || exit 0; '
         r'"$NODE_BIN" -e '
-        '${_shellQuote('eval(Buffer.from(process.argv[1], "base64").toString("utf8"))')} '
-        '${_shellQuote(encodedScript)} '
-        '${sessionPaths.map(_shellQuote).join(' ')}',
+        '${shellEscapePosix('eval(Buffer.from(process.argv[1], "base64").toString("utf8"))')} '
+        '${shellEscapePosix(encodedScript)} '
+        '${sessionPaths.map(shellEscapePosix).join(' ')}',
       );
       return parsePiSessionLabelOutput(output);
     } on Object {
@@ -3531,7 +3479,7 @@ print(json.dumps(sessions))
           )
         : await _exec(
             session,
-            '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${_shellQuote(bucket)}').join(' ')} '
+            '{ find ${buckets.map((bucket) => '"\$HOME"/.pi/agent/sessions/${shellEscapePosix(bucket)}').join(' ')} '
             '-maxdepth 1 -name "*.jsonl" -type f '
             '-exec ls -1t {} + 2>/dev/null || true; } | '
             'head -n $scanLimit',
@@ -3627,7 +3575,7 @@ print(json.dumps(sessions))
       session,
       r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
       r'"${HERMES_HOME:-$HOME/.hermes}/state.db" '
-      '${_shellQuote(sql.toString())} 2>/dev/null',
+      '${shellEscapePosix(sql.toString())} 2>/dev/null',
     );
   }
 
@@ -3706,22 +3654,12 @@ print(json.dumps(sessions))
       if (cliOutput.trim().startsWith('[')) {
         try {
           final sessions = _parseOpenCodeCliJson(cliOutput);
-          final scopedSessions =
-              workingDirectory != null && workingDirectory.isNotEmpty
-              ? sessions
-                    .where(
-                      (info) => matchesDiscoveredSessionWorkingDirectory(
-                        workingDirectory,
-                        info.workingDirectory,
-                        relatedWorkingDirectories: relatedWorkingDirectories,
-                      ),
-                    )
-                    .toList(growable: false)
-              : sessions;
           return _ToolDiscoveryResult.success(
             'OpenCode',
-            sortAndLimitDiscoveredSessions(
-              scopedSessions.isNotEmpty ? scopedSessions : sessions,
+            _scopeOpenCodeSessions(
+              sessions,
+              workingDirectory,
+              relatedWorkingDirectories,
               max,
             ),
           );
@@ -3737,22 +3675,12 @@ print(json.dumps(sessions))
       final dbOutput = await _queryOpenCodeDb(session, scanLimit);
       if (dbOutput.trim().isNotEmpty) {
         final sessions = _parseOpenCodeDbOutput(dbOutput);
-        final scopedSessions =
-            workingDirectory != null && workingDirectory.isNotEmpty
-            ? sessions
-                  .where(
-                    (info) => matchesDiscoveredSessionWorkingDirectory(
-                      workingDirectory,
-                      info.workingDirectory,
-                      relatedWorkingDirectories: relatedWorkingDirectories,
-                    ),
-                  )
-                  .toList(growable: false)
-            : sessions;
         return _ToolDiscoveryResult.success(
           'OpenCode',
-          sortAndLimitDiscoveredSessions(
-            scopedSessions.isNotEmpty ? scopedSessions : sessions,
+          _scopeOpenCodeSessions(
+            sessions,
+            workingDirectory,
+            relatedWorkingDirectories,
             max,
           ),
           hadError: hadError,
@@ -3798,22 +3726,12 @@ print(json.dumps(sessions))
       if (cliOutput.trim().startsWith('[')) {
         try {
           final sessions = _parseOpenCodeCliJson(cliOutput);
-          final scopedSessions =
-              workingDirectory != null && workingDirectory.isNotEmpty
-              ? sessions
-                    .where(
-                      (info) => matchesDiscoveredSessionWorkingDirectory(
-                        workingDirectory,
-                        info.workingDirectory,
-                        relatedWorkingDirectories: relatedWorkingDirectories,
-                      ),
-                    )
-                    .toList(growable: false)
-              : sessions;
           return _ToolDiscoveryResult.success(
             'OpenCode',
-            sortAndLimitDiscoveredSessions(
-              scopedSessions.isNotEmpty ? scopedSessions : sessions,
+            _scopeOpenCodeSessions(
+              sessions,
+              workingDirectory,
+              relatedWorkingDirectories,
               max,
             ),
           );
@@ -3887,22 +3805,12 @@ print(json.dumps(sessions))
         }
       }
 
-      final scopedSessions =
-          workingDirectory != null && workingDirectory.isNotEmpty
-          ? sessions
-                .where(
-                  (info) => matchesDiscoveredSessionWorkingDirectory(
-                    workingDirectory,
-                    info.workingDirectory,
-                    relatedWorkingDirectories: relatedWorkingDirectories,
-                  ),
-                )
-                .toList(growable: false)
-          : sessions;
       return _ToolDiscoveryResult.success(
         'OpenCode',
-        sortAndLimitDiscoveredSessions(
-          scopedSessions.isNotEmpty ? scopedSessions : sessions,
+        _scopeOpenCodeSessions(
+          sessions,
+          workingDirectory,
+          relatedWorkingDirectories,
           max,
         ),
         hadError: hadError,
@@ -3910,6 +3818,29 @@ print(json.dumps(sessions))
     } on Object {
       return const _ToolDiscoveryResult.failure('OpenCode');
     }
+  }
+
+  List<ToolSessionInfo> _scopeOpenCodeSessions(
+    List<ToolSessionInfo> sessions,
+    String? workingDirectory,
+    List<String> relatedWorkingDirectories,
+    int max,
+  ) {
+    final scoped = workingDirectory != null && workingDirectory.isNotEmpty
+        ? sessions
+              .where(
+                (info) => matchesDiscoveredSessionWorkingDirectory(
+                  workingDirectory,
+                  info.workingDirectory,
+                  relatedWorkingDirectories: relatedWorkingDirectories,
+                ),
+              )
+              .toList(growable: false)
+        : sessions;
+    return sortAndLimitDiscoveredSessions(
+      scoped.isNotEmpty ? scoped : sessions,
+      max,
+    );
   }
 
   List<ToolSessionInfo> _parseOpenCodeCliJson(String raw) {
@@ -3995,7 +3926,7 @@ print(json.dumps(sessions))
       session,
       r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
       '~/.local/share/opencode/opencode.db '
-      '${_shellQuote(sql.toString())} 2>/dev/null',
+      '${shellEscapePosix(sql.toString())} 2>/dev/null',
     );
   }
 
@@ -4069,14 +4000,13 @@ print(json.dumps(sessions))
 
   static String _markCommandDone(String command) =>
       '{ $command; __flutty_agent_discovery_exec_status__=\$?; '
-      'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
+      'printf ${shellEscapePosix('\n$_execDoneMarker:%s\n')} '
       r'"$__flutty_agent_discovery_exec_status__"; }';
 
   static String _stripDoneMarker(String output) {
-    RegExpMatch? markerMatch;
-    for (final match in _execDoneMarkerLinePattern.allMatches(output)) {
-      markerMatch = match;
-    }
+    final markerMatch = _execDoneMarkerLinePattern
+        .allMatches(output)
+        .lastOrNull;
     return markerMatch == null
         ? output
         : output.substring(0, markerMatch.start);
@@ -4084,31 +4014,14 @@ print(json.dumps(sessions))
 
   static Future<String> _readStdoutUntilDoneMarker(
     SSHSession execSession,
-  ) async {
-    final output = StringBuffer();
-    try {
-      await for (final chunk
-          in execSession.stdout
-              .cast<List<int>>()
-              .transform(utf8.decoder)
-              .timeout(_execOutputTimeout)) {
-        output.write(chunk);
-        final currentOutput = output.toString();
-        RegExpMatch? markerMatch;
-        for (final match in _execDoneMarkerLinePattern.allMatches(
-          currentOutput,
-        )) {
-          markerMatch = match;
-        }
-        if (markerMatch != null) {
-          return currentOutput.substring(0, markerMatch.start);
-        }
-      }
-    } on TimeoutException {
-      return output.toString();
-    }
-    return output.toString();
-  }
+  ) async => (await readCommandOutputUntilMarker(
+    execSession.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .timeout(_execOutputTimeout),
+    _execDoneMarker,
+    allowPartialOnTimeout: true,
+  )).output;
 
   List<String?> _acpSessionListWorkingDirectories(
     String? workingDirectory,
@@ -4138,7 +4051,7 @@ print(json.dumps(sessions))
       'copilot --acp --no-color --no-auto-update --log-level error',
     _AcpSessionProvider.openCode =>
       'opencode acp --log-level ERROR'
-          '${workingDirectory == null || workingDirectory.isEmpty ? '' : ' --cwd ${_shellQuote(workingDirectory)}'}',
+          '${workingDirectory == null || workingDirectory.isEmpty ? '' : ' --cwd ${shellEscapePosix(workingDirectory)}'}',
   };
 
   Future<_AcpSessionListResult?> _discoverAcpSessions(
@@ -4210,6 +4123,7 @@ print(json.dumps(sessions))
       var hadError = false;
       for (final listWorkingDirectory in listWorkingDirectories) {
         String? cursor;
+        final seenCursors = <String>{};
         do {
           late final AcpSessionListResult listResult;
           try {
@@ -4240,6 +4154,10 @@ print(json.dumps(sessions))
             sessionsById.putIfAbsent(info.sessionId, () => info);
           }
           cursor = listResult.nextCursor;
+          if (cursor != null && !seenCursors.add(cursor)) {
+            hadError = true;
+            break;
+          }
         } while (cursor != null && sessionsById.length < max);
       }
 
@@ -4303,7 +4221,7 @@ print(json.dumps(sessions))
       ..writeAll(
         scopedDirectories.map(
           (directory) =>
-              'printf "%s\\n" ${_shellQuote('cwd: $directory')} '
+              'printf "%s\\n" ${shellEscapePosix('cwd: $directory')} '
               r'>> "$pattern_file"; ',
         ),
       )
@@ -4389,7 +4307,7 @@ print(json.dumps(sessions))
           r'TAIL_BIN=/usr/bin/tail; [ -x "$TAIL_BIN" ] || TAIL_BIN=tail; ',
         )
         ..write('for path in ')
-        ..write(batchPaths.map(_shellQuote).join(' '))
+        ..write(batchPaths.map(shellEscapePosix).join(' '))
         ..write(r'; do [ -f "$path" ] || continue; ')
         ..write(
           r'mtime=$( ($STAT_BIN -c %Y "$path" 2>/dev/null || '
@@ -4440,7 +4358,7 @@ print(json.dumps(sessions))
     }
 
     final nameFilters = uniqueSessionIds
-        .map((id) => '-name ${_shellQuote('$id.jsonl')}')
+        .map((id) => '-name ${shellEscapePosix('$id.jsonl')}')
         .join(' -o ');
     final output = session.remoteIsWindows
         ? await _execWindowsPowerShell(
@@ -4572,11 +4490,11 @@ print(json.dumps(sessions))
       final gitOutput = await _exec(
         session,
         r'ROOT=$(git -C '
-        '${_shellQuote(trimmedWorkingDirectory)}'
+        '${shellEscapePosix(trimmedWorkingDirectory)}'
         ' rev-parse --show-toplevel 2>/dev/null) && '
         r'[ -n "$ROOT" ] && printf "root=%s\n" "$ROOT" && '
         'git -C '
-        '${_shellQuote(trimmedWorkingDirectory)}'
+        '${shellEscapePosix(trimmedWorkingDirectory)}'
         ' worktree list --porcelain 2>/dev/null',
       );
       if (gitOutput.trim().isEmpty) {
@@ -4602,9 +4520,6 @@ print(json.dumps(sessions))
       return buildRelatedWorkingDirectories(trimmedWorkingDirectory);
     }
   }
-
-  static String _shellQuote(String value) =>
-      "'${value.replaceAll("'", "'\"'\"'")}'";
 
   List<ToolSessionInfo> _limitDiscoveredSessionsPerTool(
     List<ToolSessionInfo> sessions,
@@ -5209,9 +5124,11 @@ String _buildSqlWorkingDirectoryPrefixPredicate(
   required String columnName,
 }) {
   final quotedDirectory = _sqliteQuote(directory);
-  final quotedDirectoryPrefix = _sqliteQuote('$directory/');
+  final quotedDirectoryPrefix = _sqliteQuote(
+    _workingDirectoryPrefix(directory),
+  );
   return '($columnName = $quotedDirectory OR '
-      'substr($columnName, 1, length($quotedDirectory) + 1) = '
+      'substr($columnName, 1, length($quotedDirectoryPrefix)) = '
       '$quotedDirectoryPrefix)';
 }
 

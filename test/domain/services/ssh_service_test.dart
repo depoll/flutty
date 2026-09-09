@@ -761,15 +761,6 @@ n*:5173
 LISTEN ::1:4201
 ''';
 
-      expect(parseRemoteListeningTcpPorts(output), {
-        3000,
-        8080,
-        5173,
-        4200,
-        4201,
-        4300,
-        53,
-      });
       expect(parseRemoteListeningTcpListeners(output), {
         remoteTcpListenerKey('127.0.0.2', 3000): (
           host: '127.0.0.2',

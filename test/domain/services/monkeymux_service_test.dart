@@ -70,8 +70,8 @@ void main() {
         command,
         "'/home/me/.monkeyssh/bin/monkey mux' attach --quiet "
         "--client-id 'app 7' --clip-viewport --update-policy never "
-        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
-        "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
+        r"--restore-yolo --cwd '~/src/it'\''s app' --name 'Codex agent' --command "
+        r"'codex --model '\''gpt-5.4'\''' 'work'\''space'",
       );
     });
 

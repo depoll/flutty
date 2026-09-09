@@ -1,7 +1,23 @@
+import 'dart:collection';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_protocol.dart';
 import 'package:monkeyssh/domain/models/acp_updates.dart';
+
+class _UnreadableMap extends MapBase<String, Object?> {
+  @override
+  Iterable<String> get keys => throw StateError('Discarded entry traversed');
+  @override
+  Object? operator [](Object? key) => throw StateError('Discarded entry read');
+  @override
+  void operator []=(String key, Object? value) =>
+      throw UnsupportedError('read only');
+  @override
+  void clear() => throw UnsupportedError('read only');
+  @override
+  Object? remove(Object? key) => throw UnsupportedError('read only');
+}
 
 void main() {
   test('parses capabilities and preserves unknown extensions', () {
@@ -258,12 +274,13 @@ void main() {
         AcpSessionUpdate.fromJson({
               'sessionUpdate': 'plan',
               'entries': [
-                for (var index = 0; index < acpMaxPlanEntries + 5; index++)
+                for (var index = 0; index < acpMaxPlanEntries; index++)
                   {
                     'content': 'x' * (acpMaxPlanEntryCharacters + 10),
                     'priority': 'medium',
                     'status': 'pending',
                   },
+                _UnreadableMap(),
               ],
             })
             as AcpPlanUpdate;

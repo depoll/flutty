@@ -6,50 +6,6 @@ import 'package:monkeyssh/domain/models/terminal_progress.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 
 void main() {
-  group('TmuxSession', () {
-    test('parses from tmux format string', () {
-      const line = 'dev|3|1|1712930000';
-      final session = TmuxSession.fromTmuxFormat(line);
-
-      expect(session.name, 'dev');
-      expect(session.windowCount, 3);
-      expect(session.isAttached, true);
-      expect(session.lastActivity, isNotNull);
-    });
-
-    test('parses unattached session', () {
-      const line = 'build|1|0|1712920000';
-      final session = TmuxSession.fromTmuxFormat(line);
-
-      expect(session.name, 'build');
-      expect(session.windowCount, 1);
-      expect(session.isAttached, false);
-    });
-
-    test('handles missing activity field', () {
-      const line = 'test|2|0';
-      final session = TmuxSession.fromTmuxFormat(line);
-
-      expect(session.name, 'test');
-      expect(session.windowCount, 2);
-      expect(session.lastActivity, isNull);
-    });
-
-    test('throws on too few fields', () {
-      expect(() => TmuxSession.fromTmuxFormat('bad|1'), throwsFormatException);
-    });
-
-    test('equality works correctly', () {
-      const a = TmuxSession(name: 'dev', windowCount: 3, isAttached: true);
-      const b = TmuxSession(name: 'dev', windowCount: 3, isAttached: true);
-      const c = TmuxSession(name: 'prod', windowCount: 1, isAttached: false);
-
-      expect(a, equals(b));
-      expect(a, isNot(equals(c)));
-      expect(a.hashCode, b.hashCode);
-    });
-  });
-
   group('TmuxWindow', () {
     test('parses from tmux format string with all fields', () {
       const sep = tmuxWindowFieldSeparator;

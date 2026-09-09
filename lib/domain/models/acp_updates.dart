@@ -160,19 +160,15 @@ final class AcpPlanUpdate extends AcpSessionUpdate {
   });
 
   /// Parses a plan update.
-  factory AcpPlanUpdate.fromJson(AcpJsonMap json) {
-    final entries = <AcpPlanEntry>[];
-    for (final item in AcpJson.listField(json, 'entries') ?? const []) {
-      final entry = AcpJson.object(item);
-      if (entry != null) entries.add(AcpPlanEntry.fromJson(entry));
-      if (entries.length >= acpMaxPlanEntries) break;
-    }
-    return AcpPlanUpdate(
-      entries: List<AcpPlanEntry>.unmodifiable(entries),
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const ['sessionUpdate', 'entries']),
-    );
-  }
+  factory AcpPlanUpdate.fromJson(AcpJsonMap json) => AcpPlanUpdate(
+    entries: AcpJson.objectList(
+      json['entries'],
+      AcpPlanEntry.fromJson,
+      limit: acpMaxPlanEntries,
+    ),
+    meta: AcpJson.meta(json),
+    extensions: AcpJson.extensions(json, const ['sessionUpdate', 'entries']),
+  );
 
   @override
   String get kind => 'plan';
@@ -622,24 +618,18 @@ final class AcpAvailableCommandsUpdate extends AcpSessionUpdate {
   });
 
   /// Parses an available-commands update.
-  factory AcpAvailableCommandsUpdate.fromJson(AcpJsonMap json) {
-    final commands = <AcpAvailableCommand>[];
-    for (final item
-        in AcpJson.listField(json, 'availableCommands') ?? const []) {
-      final command = AcpJson.object(item);
-      if (command != null) {
-        commands.add(AcpAvailableCommand.fromJson(command));
-      }
-    }
-    return AcpAvailableCommandsUpdate(
-      commands: List<AcpAvailableCommand>.unmodifiable(commands),
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const [
-        'sessionUpdate',
-        'availableCommands',
-      ]),
-    );
-  }
+  factory AcpAvailableCommandsUpdate.fromJson(AcpJsonMap json) =>
+      AcpAvailableCommandsUpdate(
+        commands: AcpJson.objectList(
+          json['availableCommands'],
+          AcpAvailableCommand.fromJson,
+        ),
+        meta: AcpJson.meta(json),
+        extensions: AcpJson.extensions(json, const [
+          'sessionUpdate',
+          'availableCommands',
+        ]),
+      );
 
   @override
   String get kind => 'available_commands_update';
@@ -738,23 +728,18 @@ final class AcpConfigOptionsUpdate extends AcpSessionUpdate {
   });
 
   /// Parses a configuration update.
-  factory AcpConfigOptionsUpdate.fromJson(AcpJsonMap json) {
-    final options = <AcpSessionConfigOption>[];
-    for (final item in AcpJson.listField(json, 'configOptions') ?? const []) {
-      final option = AcpJson.object(item);
-      if (option != null) {
-        options.add(AcpSessionConfigOption.fromJson(option));
-      }
-    }
-    return AcpConfigOptionsUpdate(
-      options: List<AcpSessionConfigOption>.unmodifiable(options),
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const [
-        'sessionUpdate',
-        'configOptions',
-      ]),
-    );
-  }
+  factory AcpConfigOptionsUpdate.fromJson(AcpJsonMap json) =>
+      AcpConfigOptionsUpdate(
+        options: AcpJson.objectList(
+          json['configOptions'],
+          AcpSessionConfigOption.fromJson,
+        ),
+        meta: AcpJson.meta(json),
+        extensions: AcpJson.extensions(json, const [
+          'sessionUpdate',
+          'configOptions',
+        ]),
+      );
 
   @override
   String get kind => 'config_option_update';

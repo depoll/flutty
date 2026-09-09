@@ -60,10 +60,7 @@ void main() {
 
       expect(result.output, 'ok');
       expect(result.exitCode, isNull);
-      expect(
-        commands,
-        contains("cd '/tmp/user'\"'\"'s repo' && ( printf hi )"),
-      );
+      expect(commands, contains(r"cd '/tmp/user'\''s repo' && ( printf hi )"));
     });
 
     test('delegates tmux window operations through the multiplexer', () async {

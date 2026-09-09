@@ -15,6 +15,7 @@ import 'acp_transport.dart';
 import 'diagnostics_log_service.dart';
 import 'monkeymux_installer_service.dart';
 import 'monkeymux_service.dart';
+import 'remote_file_service.dart' show shellEscapePosix;
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -84,7 +85,7 @@ String buildMonkeyMuxAcpProviderCommand(
   final command = isWindows
       ? buildWindowsPowerShellCommand(windowsScript)
       : '$_profileSourcingPrefix'
-            'exec ${launchArgv.map(_posixShellQuote).join(' ')}';
+            'exec ${launchArgv.map(shellEscapePosix).join(' ')}';
   if (utf8.encode(command).length > 8192) {
     throw const MonkeyMuxAcpBridgeException(
       MonkeyMuxAcpBridgeErrorKind.invalidLaunch,
@@ -1657,7 +1658,7 @@ String _buildHelperCommand(
     return [
       installation.executablePath,
       ...arguments,
-    ].map(_posixShellQuote).join(' ');
+    ].map(shellEscapePosix).join(' ');
   }
   const helperVariable = r'$__flAcpHelper';
   const argumentsVariable = r'$__flAcpArgs';
@@ -1928,8 +1929,5 @@ void _validateAcpInputFrame(List<int> frame) {
 
 String _providerHash(String providerId) =>
     sha256.convert(utf8.encode(providerId)).toString().substring(0, 16);
-
-String _posixShellQuote(String value) =>
-    "'${value.replaceAll("'", "'\"'\"'")}'";
 
 void _ignoreStreamError(Object _, StackTrace _) {}

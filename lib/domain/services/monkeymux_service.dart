@@ -13,6 +13,7 @@ import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
 import 'monkeymux_installer_service.dart';
+import 'remote_file_service.dart' show shellEscapePosix;
 import 'remote_multiplexer_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
@@ -1127,7 +1128,7 @@ class MonkeyMuxService implements RemoteMultiplexerService {
         r'for helper in "$HOME"/.monkeyssh/bin/monkeymux/*/*/monkeymux; do '
         r'[ -x "$helper" ] || continue; '
         r'"$helper" control --json '
-        '${_shellQuote(sessionName)}'
+        '${shellEscapePosix(sessionName)}'
         ' 2>/dev/null && exit 0; done; exit 1';
     try {
       final status = await session.runQueuedExec(
@@ -2774,15 +2775,13 @@ String? _nonEmpty(String? value) {
   return trimmed == null || trimmed.isEmpty ? null : trimmed;
 }
 
-String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";
-
 /// Quotes a single MonkeyMux command argument for the remote shell. POSIX hosts
 /// use single-quote escaping; Windows hosts use [_windowsQuoteArg], which
 /// follows the CommandLineToArgvW parsing rules so embedded quotes and trailing
 /// backslashes survive (helper path, session name, working directory, launch
 /// command).
 String _monkeyMuxQuoteArg(String value, {required bool windows}) =>
-    windows ? _windowsQuoteArg(value) : _shellQuote(value);
+    windows ? _windowsQuoteArg(value) : shellEscapePosix(value);
 
 /// Quotes [value] as a single Windows argument following the
 /// CommandLineToArgvW / C runtime rules (the same algorithm as Go's

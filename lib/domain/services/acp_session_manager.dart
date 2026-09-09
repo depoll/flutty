@@ -207,40 +207,16 @@ class AcpSessionManager {
     String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
-  }) => _serialize(() async {
-    _telemetry.featureOpened();
-    final launch = await _resolveLaunch(
-      providerId,
-      launchCommandOverride: launchCommandOverride,
-    );
-    if (launch is _LaunchError) {
-      return AcpSessionLaunchFailed(null, launch.error);
-    }
-    final resolved = _withProviderLabel(
-      launch as _ResolvedLaunch,
-      providerLabelOverride,
-    );
-    final workingDirectory = await _resolveWorkingDirectory(hostId, cwd);
-    if (workingDirectory.error case final error?) {
-      return AcpSessionLaunchFailed(null, error);
-    }
-
-    await _stopAll(replace);
-
-    final decision = _evaluate('\u0000new');
-    if (decision is AcpConcurrencyRequiresChoice) {
-      return AcpSessionLaunchBlocked(decision);
-    }
-
-    return _startBridgeAndSession(
-      hostId: hostId,
-      launch: resolved,
-      cwd: workingDirectory.value!,
-      confirmInstall: confirmInstall,
-      existingSessionId: null,
-      autoApprovePermissions: autoApprovePermissions,
-    );
-  });
+  }) => _launchProviderSession(
+    hostId: hostId,
+    providerId: providerId,
+    cwd: cwd,
+    confirmInstall: confirmInstall,
+    launchCommandOverride: launchCommandOverride,
+    providerLabelOverride: providerLabelOverride,
+    autoApprovePermissions: autoApprovePermissions,
+    replace: replace,
+  );
 
   /// Starts a fresh provider bridge and loads/resumes [acpSessionId].
   ///
@@ -257,6 +233,28 @@ class AcpSessionManager {
     String? providerLabelOverride,
     bool autoApprovePermissions = false,
     List<AcpSessionKey> replace = const <AcpSessionKey>[],
+  }) => _launchProviderSession(
+    hostId: hostId,
+    providerId: providerId,
+    cwd: cwd,
+    confirmInstall: confirmInstall,
+    launchCommandOverride: launchCommandOverride,
+    providerLabelOverride: providerLabelOverride,
+    autoApprovePermissions: autoApprovePermissions,
+    replace: replace,
+    existingSessionId: acpSessionId,
+  );
+
+  Future<AcpSessionLaunchResult> _launchProviderSession({
+    required int hostId,
+    required String providerId,
+    required String cwd,
+    required bool autoApprovePermissions,
+    required List<AcpSessionKey> replace,
+    MonkeyMuxInstallConfirmation? confirmInstall,
+    AcpLaunchCommand? launchCommandOverride,
+    String? providerLabelOverride,
+    String? existingSessionId,
   }) => _serialize(() async {
     _telemetry.featureOpened();
     final launch = await _resolveLaunch(
@@ -277,7 +275,9 @@ class AcpSessionManager {
 
     await _stopAll(replace);
 
-    final decision = _evaluate('\u0000resume');
+    final decision = _evaluate(
+      existingSessionId == null ? '\u0000new' : '\u0000resume',
+    );
     if (decision is AcpConcurrencyRequiresChoice) {
       return AcpSessionLaunchBlocked(decision);
     }
@@ -287,7 +287,7 @@ class AcpSessionManager {
       launch: resolved,
       cwd: workingDirectory.value!,
       confirmInstall: confirmInstall,
-      existingSessionId: acpSessionId,
+      existingSessionId: existingSessionId,
       autoApprovePermissions: autoApprovePermissions,
     );
   });
@@ -603,61 +603,6 @@ class AcpSessionManager {
   /// Loads persisted recent sessions.
   Future<List<AcpRecentSessionRef>> loadRecentSessions() =>
       _recentSessions.list();
-
-  /// Loads host-scoped native sessions from both local recents and the remote
-  /// MonkeyMux bridge registry. Current helper metadata is persisted locally so
-  /// the same session remains navigable through transient SSH disconnects.
-  Future<List<AcpRecentSessionRef>> loadNavigableSessions(int hostId) async {
-    final local = (await _recentSessions.list())
-        .where((recent) => recent.hostId == hostId)
-        .toList(growable: true);
-    try {
-      final providers = await _providerService.listAllProviders();
-      final providerByLabel = <String, String>{
-        for (final provider in providers) provider.label: provider.id,
-      };
-      final remote = await _connector.listBridges(hostId);
-      for (final bridge in remote) {
-        final sessionId = bridge.sessionId;
-        final providerId =
-            bridge.providerId ?? providerByLabel[bridge.provider];
-        if (sessionId == null ||
-            sessionId.isEmpty ||
-            providerId == null ||
-            providerId.isEmpty) {
-          continue;
-        }
-        final recent = AcpRecentSessionRef(
-          hostId: hostId,
-          providerId: providerId,
-          bridgeId: bridge.id,
-          acpSessionId: sessionId,
-          cwd: bridge.cwd,
-          createdAt: bridge.startedAt,
-          lastActivityAt: bridge.lastActivity,
-        );
-        final index = local.indexWhere(
-          (candidate) => candidate.key.value == recent.key.value,
-        );
-        final merged = index >= 0
-            ? local[index].copyWith(
-                cwd: recent.cwd,
-                lastActivityAt: recent.lastActivityAt,
-              )
-            : recent;
-        if (index >= 0) {
-          local[index] = merged;
-        } else {
-          local.add(merged);
-        }
-        await _recentSessions.record(merged);
-      }
-    } on Object {
-      // Local recents remain available while SSH/helper discovery is offline.
-    }
-    local.sort((a, b) => b.lastActivityAt.compareTo(a.lastActivityAt));
-    return List<AcpRecentSessionRef>.unmodifiable(local);
-  }
 
   /// Loads the persisted last-selected session key.
   Future<AcpSessionKey?> loadLastSelected() =>

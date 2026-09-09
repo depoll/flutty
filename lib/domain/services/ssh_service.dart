@@ -3429,12 +3429,6 @@ Map<RemoteTcpListenerKey, RemoteTcpListener> parseRemoteListeningTcpListeners(
   return listeners;
 }
 
-/// Extracts only port numbers from remote listener output.
-Set<int> parseRemoteListeningTcpPorts(String output) =>
-    parseRemoteListeningTcpListeners(
-      output,
-    ).values.map((listener) => listener.port).toSet();
-
 /// Canonical listener identity used by discovery and manual-forward exclusions.
 RemoteTcpListenerKey remoteTcpListenerKey(String host, int port) =>
     (host: _canonicalRemoteTcpListenerHost(host), port: port);
@@ -8417,49 +8411,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Get all active connection metadata for UI rendering.
   List<ActiveConnection> getActiveConnections() {
-    final connections = <ActiveConnection>[];
-    for (final entry in state.entries) {
-      final connectionId = entry.key;
-      final session = _sshService.getSession(connectionId);
-      final hostId = _connectionHostIds[connectionId];
-      if (session == null || hostId == null) {
-        continue;
-      }
-      final nativeFocusTitle = _activeNativeAcpConnectionTitle(session);
-      connections.add(
-        ActiveConnection(
-          connectionId: connectionId,
-          hostId: hostId,
-          state: entry.value,
-          createdAt: session.createdAt,
-          config: session.config,
-          preview: nativeFocusTitle == null
-              ? session.terminalPreview
-              : session.activeNativeAcpPreview,
-          previewSnapshot: nativeFocusTitle == null
-              ? session.terminalPreviewSnapshot
-              : null,
-          nativeAcpPreviewSnapshot: nativeFocusTitle == null
-              ? null
-              : session.activeNativeAcpPreviewSnapshot,
-          terminalTheme: session.terminalTheme,
-          sessionTitle:
-              nativeFocusTitle ?? _connectionSessionTitles[connectionId],
-          windowTitle: nativeFocusTitle == null ? session.windowTitle : null,
-          iconName: nativeFocusTitle == null ? session.iconName : null,
-          workingDirectory: nativeFocusTitle == null
-              ? session.workingDirectory
-              : null,
-          shellStatus: nativeFocusTitle == null ? session.shellStatus : null,
-          lastExitCode: nativeFocusTitle == null ? session.lastExitCode : null,
-          remoteMuxBackend: session.remoteMuxBackend,
-          remoteMuxSessionName: session.remoteMuxSessionName,
-          terminalThemeLightId: session.terminalThemeLightId,
-          terminalThemeDarkId: session.terminalThemeDarkId,
-        ),
-      );
-    }
-    connections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final connections =
+        state.keys
+            .map(getActiveConnection)
+            .whereType<ActiveConnection>()
+            .toList()
+          ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return connections;
   }
 

@@ -63,17 +63,23 @@ SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   return session;
 }
 
-SSHSession _buildOpenMarkerExecSession({String stdout = ''}) {
+SSHSession _buildOpenMarkerExecSession({String stdout = '', int? chunkSize}) {
   final session = _MockExecSession();
   final stdoutController = StreamController<Uint8List>();
   final stderrController = StreamController<Uint8List>();
 
   scheduleMicrotask(() {
-    stdoutController.add(
-      Uint8List.fromList(
-        utf8.encode('$stdout\n__flutty_agent_discovery_exec_done__:0\n'),
-      ),
+    final bytes = utf8.encode(
+      '$stdout\n__flutty_agent_discovery_exec_done__:0\n',
     );
+    final size = chunkSize ?? bytes.length;
+    for (var offset = 0; offset < bytes.length; offset += size) {
+      stdoutController.add(
+        Uint8List.fromList(
+          bytes.sublist(offset, (offset + size).clamp(0, bytes.length)),
+        ),
+      );
+    }
   });
 
   when(() => session.stdout).thenAnswer((_) => stdoutController.stream);
@@ -90,6 +96,7 @@ SSHSession _buildAcpSessionListExecSession({
   required List<Map<String, Object?>> sessions,
   bool supportsList = true,
   bool malformedSecondPage = false,
+  bool repeatedCursor = false,
   List<String?>? requestedCwds,
 }) {
   final session = _MockExecSession();
@@ -138,7 +145,8 @@ SSHSession _buildAcpSessionListExecSession({
               ? 'malformed'
               : <String, Object?>{
                   'sessions': sessions,
-                  if (malformedSecondPage && listRequestCount == 1)
+                  if ((repeatedCursor && listRequestCount < 10) ||
+                      (malformedSecondPage && listRequestCount == 1))
                     'nextCursor': 'page-2',
                 },
         });
@@ -215,6 +223,42 @@ branch refs/heads/fix/session-resumption
       );
     });
   });
+
+  test(
+    'root directory includes descendants and maps relative worktree paths',
+    () {
+      expect(matchesDiscoveredSessionWorkingDirectory('/', '/repo'), isTrue);
+      expect(matchesDiscoveredSessionWorkingDirectory('/', '/'), isTrue);
+      expect(
+        matchesDiscoveredSessionWorkingDirectory('/repo', '/repository'),
+        isFalse,
+      );
+      expect(
+        buildRelatedWorkingDirectories(
+          '/repo',
+          gitRoot: '/',
+          gitWorktreeRoots: const ['/', '/sibling'],
+        ),
+        contains('/sibling/repo'),
+      );
+      expect(
+        scopeDiscoveredSessionsToWorkingDirectory(const [
+          ToolSessionInfo(
+            toolName: 'OpenCode',
+            sessionId: 'root-child',
+            workingDirectory: '/repo',
+          ),
+        ], '/').single.sessionId,
+        'root-child',
+      );
+      expect(
+        buildSqlWorkingDirectoryScopeClause(const [
+          '/',
+        ], columnName: 'directory'),
+        contains("substr(directory, 1, length('/')) = '/'"),
+      );
+    },
+  );
 
   group('matchesDiscoveredSessionWorkingDirectory', () {
     test('matches the main checkout from a sibling worktree', () {
@@ -761,7 +805,7 @@ cwd: /tmp/demo
       expect(
         clause,
         contains(
-          "substr(directory, 1, length('/Users/depoll/Code/my_repo') + 1) = '/Users/depoll/Code/my_repo/'",
+          "substr(directory, 1, length('/Users/depoll/Code/my_repo/')) = '/Users/depoll/Code/my_repo/'",
         ),
       );
     });
@@ -1279,31 +1323,6 @@ cwd: /tmp/demo
     });
   });
 
-  group('parseAcpSessionListResult', () {
-    test('maps ACP session/list metadata to tool session info', () {
-      final sessions = parseAcpSessionListResult('OpenCode', {
-        'sessions': [
-          {
-            'sessionId': 'ses_123',
-            'cwd': '/Users/depoll/Code/flutty',
-            'title': 'Fix ACP discovery',
-            'updatedAt': '2026-05-04T05:48:19.955Z',
-          },
-        ],
-      });
-
-      expect(sessions, hasLength(1));
-      expect(sessions.single.toolName, 'OpenCode');
-      expect(sessions.single.sessionId, 'ses_123');
-      expect(sessions.single.workingDirectory, '/Users/depoll/Code/flutty');
-      expect(sessions.single.summary, 'Fix ACP discovery');
-      expect(
-        sessions.single.lastActive,
-        DateTime.parse('2026-05-04T05:48:19.955Z'),
-      );
-    });
-  });
-
   group('parseOpenCodeStorageSessionMetadata', () {
     test('maps JSON storage sessions to unified metadata', () {
       final metadata = parseOpenCodeStorageSessionMetadata(r'''
@@ -1610,6 +1629,77 @@ branch refs/heads/main
         );
 
         expect(result.sessions, hasLength(1));
+        expect(
+          result.sessions.single.summary,
+          'Preserve partial ACP discovery',
+        );
+        expect(
+          commands.where((command) => command.contains('workspace.yaml')),
+          isEmpty,
+        );
+      },
+    );
+
+    test(
+      'ACP discovery preserves sessions and stops repeated cursors per directory',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        final requestedCwds = <String?>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty.worktrees/feature
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('copilot --acp')) {
+            return _buildAcpSessionListExecSession(
+              sessions: const [
+                {
+                  'sessionId': '12345678-1234-1234-1234-1234567890ab',
+                  'cwd': '/Users/depoll/Code/flutty',
+                  'title': 'Preserve partial ACP discovery',
+                  'updatedAt': '2026-05-04T05:48:19.955Z',
+                },
+              ],
+              repeatedCursor: true,
+              requestedCwds: requestedCwds,
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final result = await discovery.discoverSessions(
+          _buildDiscoverySession(client),
+          workingDirectory: '/Users/depoll/Code/flutty',
+          toolName: 'Copilot CLI',
+        );
+
+        expect(result.sessions, hasLength(1));
+        expect(result.failedTools, isEmpty);
+        expect(requestedCwds, [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature',
+          '/Users/depoll/Code/flutty.worktrees/feature',
+        ]);
+        expect(
+          result.sessions.single.workingDirectory,
+          '/Users/depoll/Code/flutty',
+        );
+        expect(
+          result.sessions.single.lastActive,
+          DateTime.parse('2026-05-04T05:48:19.955Z'),
+        );
         expect(
           result.sessions.single.summary,
           'Preserve partial ACP discovery',
@@ -2061,6 +2151,48 @@ branch refs/heads/main
           .discoverSessions(session, toolName: 'Cursor Agent')
           .timeout(const Duration(seconds: 2));
 
+      expect(result.sessions.map((session) => session.sessionId), [
+        '1e9f3c8d-7a2b-4e1c-8d2b-3c4d5e6f7a81',
+      ]);
+    });
+
+    test('reads split markers and fragmented large discovery output', () async {
+      final client = _MockSshClient();
+      const metaPath =
+          '/Users/demo/.cursor/chats/workspace/'
+          '1e9f3c8d-7a2b-4e1c-8d2b-3c4d5e6f7a81/meta.json';
+      final metaJson = jsonEncode({
+        'schemaVersion': 1,
+        'createdAtMs': 1783404550969,
+        'hasConversation': true,
+        'title': 'Open stream Cursor session',
+        'padding': 'x' * 100000,
+        'updatedAtMs': 1783405351095,
+        'cwd': '/Users/depoll/Code/flutty',
+      });
+
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        if (command.contains('find ~/.cursor/chats')) {
+          return _buildOpenMarkerExecSession(stdout: metaPath, chunkSize: 1);
+        }
+        if (command.contains(metaPath)) {
+          return _buildOpenMarkerExecSession(
+            stdout: _remoteSnapshotLine(metaPath, metaJson),
+            chunkSize: 7,
+          );
+        }
+        return _buildOpenMarkerExecSession(chunkSize: 1);
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final result = await discovery
+          .discoverSessions(session, toolName: 'Cursor Agent')
+          .timeout(const Duration(seconds: 2));
+
+      expect(result.sessions.single.summary, 'Open stream Cursor session');
       expect(result.sessions.map((session) => session.sessionId), [
         '1e9f3c8d-7a2b-4e1c-8d2b-3c4d5e6f7a81',
       ]);

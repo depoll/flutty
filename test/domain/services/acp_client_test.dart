@@ -130,7 +130,13 @@ void main() {
     );
 
     final initialization = await client.initialize();
-    final sessions = await client.listAllSessions(cwd: '/repo');
+    final firstPage = await client.listSessions(cwd: '/repo');
+    final secondPage = await client.listSessions(
+      cwd: '/repo',
+      cursor: firstPage.nextCursor,
+    );
+    final sessions = [...firstPage.sessions, ...secondPage.sessions];
+    expect(secondPage.nextCursor, isNull);
 
     final initializeRequest = transport.requests.firstWhere(
       (request) => request['method'] == 'initialize',

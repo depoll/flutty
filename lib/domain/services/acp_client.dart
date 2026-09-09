@@ -194,40 +194,6 @@ final class AcpClient {
     return AcpSessionListResult.fromJson(_requireObject(result));
   }
 
-  /// Lists pages until the cursor ends or [maxSessions] is reached.
-  Future<List<AcpSessionInfo>> listAllSessions({
-    String? cwd,
-    int? maxSessions,
-    Duration? timeout,
-  }) async {
-    if (maxSessions != null && maxSessions <= 0) {
-      return const <AcpSessionInfo>[];
-    }
-    final sessions = <AcpSessionInfo>[];
-    final seenCursors = <String>{};
-    String? cursor;
-    do {
-      final page = await listSessions(
-        cwd: cwd,
-        cursor: cursor,
-        timeout: timeout,
-      );
-      for (final session in page.sessions) {
-        sessions.add(session);
-        if (maxSessions != null && sessions.length >= maxSessions) {
-          return List<AcpSessionInfo>.unmodifiable(sessions);
-        }
-      }
-      cursor = page.nextCursor;
-      if (cursor != null && !seenCursors.add(cursor)) {
-        throw const AcpProtocolException(
-          'session/list returned a repeated cursor',
-        );
-      }
-    } while (cursor != null);
-    return List<AcpSessionInfo>.unmodifiable(sessions);
-  }
-
   /// Loads a stored ACP session and requests history replay.
   Future<AcpSessionSetupResult> loadSession({
     required String sessionId,

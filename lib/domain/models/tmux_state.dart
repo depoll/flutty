@@ -35,68 +35,6 @@ class TmuxPaneContext {
   final String? currentCommand;
 }
 
-/// Represents a tmux session on a remote host.
-@immutable
-class TmuxSession {
-  /// Creates a new [TmuxSession].
-  const TmuxSession({
-    required this.name,
-    required this.windowCount,
-    required this.isAttached,
-    this.lastActivity,
-  });
-
-  /// Parses a [TmuxSession] from a pipe-delimited tmux format string.
-  ///
-  /// Expected format (from `tmux list-sessions -F`):
-  /// `session_name|window_count|attached_flag|activity_epoch`
-  factory TmuxSession.fromTmuxFormat(String line) {
-    final fields = line.split('|');
-    if (fields.length < 3) {
-      throw FormatException('Invalid tmux session format: $line');
-    }
-    final activityEpoch = fields.length > 3 && fields[3].isNotEmpty
-        ? int.tryParse(fields[3])
-        : null;
-    return TmuxSession(
-      name: fields[0],
-      windowCount: int.tryParse(fields[1]) ?? 0,
-      isAttached: fields[2] == '1',
-      lastActivity: activityEpoch != null && activityEpoch > 0
-          ? DateTime.fromMillisecondsSinceEpoch(activityEpoch * 1000)
-          : null,
-    );
-  }
-
-  /// The session name.
-  final String name;
-
-  /// Number of windows in this session.
-  final int windowCount;
-
-  /// Whether a client is currently viewing this session.
-  final bool isAttached;
-
-  /// When this session was last active.
-  final DateTime? lastActivity;
-
-  @override
-  String toString() =>
-      'TmuxSession(name: $name, windows: $windowCount, '
-      'attached: $isAttached)';
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is TmuxSession &&
-          name == other.name &&
-          windowCount == other.windowCount &&
-          isAttached == other.isAttached;
-
-  @override
-  int get hashCode => Object.hash(name, windowCount, isAttached);
-}
-
 /// Represents a single window within a tmux session.
 @immutable
 class TmuxWindow {
@@ -1184,6 +1122,28 @@ AgentSessionConfidence? _agentSessionConfidenceFromMetadata(String? value) {
   };
 }
 
+final _agentResumeFlagPattern = RegExp(
+  r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentResumeCommandPattern = RegExp(
+  r'''(?<!\S)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentSessionFlagPattern = RegExp(
+  r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentConversationFlagPattern = RegExp(
+  r'''(?<!\S)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentSessionIdFlagPattern = RegExp(
+  r'''(?<!\S)--session-id(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentShortResumeFlagPattern = RegExp(
+  r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+final _agentResumeOrLoadFlagPattern = RegExp(
+  r'''(?<!\S)--(?:resume|load)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+);
+
 /// Extracts a tool-specific session ID from a launch/resume command.
 String? agentSessionIdFromLaunchCommand(
   String? value, {
@@ -1192,43 +1152,29 @@ String? agentSessionIdFromLaunchCommand(
   final command = value?.trim();
   if (command == null || command.isEmpty) return null;
   final patterns = switch (tool) {
-    AgentLaunchTool.claudeCode => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    AgentLaunchTool.claudeCode => [_agentResumeFlagPattern],
+    AgentLaunchTool.copilotCli => [_agentResumeFlagPattern],
+    AgentLaunchTool.codex => [_agentResumeCommandPattern],
+    AgentLaunchTool.openCode => [_agentSessionFlagPattern],
+    AgentLaunchTool.antigravity => [_agentConversationFlagPattern],
+    AgentLaunchTool.cursorAgent => [_agentResumeFlagPattern],
+    AgentLaunchTool.pi => [
+      _agentSessionFlagPattern,
+      _agentSessionIdFlagPattern,
     ],
-    AgentLaunchTool.copilotCli => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    AgentLaunchTool.hermes => [
+      _agentResumeFlagPattern,
+      _agentShortResumeFlagPattern,
     ],
-    AgentLaunchTool.codex => const [
-      r'''(?<!\S)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.openCode => const [
-      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.antigravity => const [
-      r'''(?<!\S)--conversation(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.cursorAgent => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.pi => const [
-      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-      r'''(?<!\S)--session-id(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.hermes => const [
-      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-      r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.openclaw => const [
-      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-    ],
-    AgentLaunchTool.grokBuild => const [
-      r'''(?<!\S)--(?:resume|load)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
-      r'''(?<!\S)-r\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    AgentLaunchTool.openclaw => [_agentSessionFlagPattern],
+    AgentLaunchTool.grokBuild => [
+      _agentResumeOrLoadFlagPattern,
+      _agentShortResumeFlagPattern,
     ],
   };
 
   for (final pattern in patterns) {
-    final match = RegExp(pattern).firstMatch(command);
+    final match = pattern.firstMatch(command);
     if (match == null) continue;
     for (var index = 1; index <= match.groupCount; index++) {
       final value = match.group(index)?.trim();

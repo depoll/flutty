@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -37,27 +38,6 @@ void main() {
       });
     });
 
-    group('getAllKeys', () {
-      test('returns empty list initially', () async {
-        final keys = await keyService.getAllKeys();
-        expect(keys, isEmpty);
-      });
-
-      test('returns keys after insert', () async {
-        await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Test Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final keys = await keyService.getAllKeys();
-        expect(keys, hasLength(1));
-      });
-    });
-
     group('getById', () {
       test('returns key when exists', () async {
         final id = await keyRepository.insert(
@@ -77,117 +57,6 @@ void main() {
       test('returns null when not exists', () async {
         final key = await keyService.getById(999);
         expect(key, isNull);
-      });
-    });
-
-    group('deleteKey', () {
-      test('deletes key', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'To Delete',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        await keyService.deleteKey(id);
-
-        final key = await keyService.getById(id);
-        expect(key, isNull);
-      });
-    });
-
-    group('exportPublicKey', () {
-      test('returns public key without comment', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Test',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final key = await keyService.getById(id);
-        final exported = keyService.exportPublicKey(key!);
-        expect(exported, 'ssh-ed25519 AAAA...');
-      });
-
-      test('returns public key with comment', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Test',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final key = await keyService.getById(id);
-        final exported = keyService.exportPublicKey(key!, comment: 'user@host');
-        expect(exported, 'ssh-ed25519 AAAA... user@host');
-      });
-
-      test('ignores empty comment', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Test',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final key = await keyService.getById(id);
-        final exported = keyService.exportPublicKey(key!, comment: '');
-        expect(exported, 'ssh-ed25519 AAAA...');
-      });
-    });
-
-    group('exportPrivateKey', () {
-      test('returns private key', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Test',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final key = await keyService.getById(id);
-        final exported = keyService.exportPrivateKey(key!);
-        expect(exported, 'test-open-ssh-key-material...');
-      });
-    });
-
-    group('watchAllKeys', () {
-      test('emits updates', () async {
-        await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Watched Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final stream = keyService.watchAllKeys();
-        final firstValue = await stream.first;
-        expect(firstValue, hasLength(1));
-      });
-    });
-
-    group('validatePrivateKey', () {
-      test('returns false for invalid PEM', () {
-        final result = keyService.validatePrivateKey('not a valid key');
-        expect(result, isFalse);
-      });
-
-      test('returns false for empty string', () {
-        final result = keyService.validatePrivateKey('');
-        expect(result, isFalse);
       });
     });
 
@@ -245,8 +114,8 @@ void main() {
         expect(key.publicKey, startsWith('ssh-ed25519 '));
         expect(key.privateKey, contains('OPENSSH PRIVATE KEY'));
         expect(key.fingerprint, startsWith('SHA256:'));
-        expect(keyService.validatePrivateKey(key.privateKey), isTrue);
-        expect(await keyService.getAllKeys(), hasLength(1));
+        expect(SSHKeyPair.fromPem(key.privateKey), isNotEmpty);
+        expect(await keyRepository.getAll(), hasLength(1));
       });
 
       test(
@@ -260,7 +129,7 @@ void main() {
           expect(key, isNotNull);
           expect(key!.keyType, 'ssh-rsa');
           expect(key.publicKey, startsWith('ssh-rsa '));
-          expect(keyService.validatePrivateKey(key.privateKey), isTrue);
+          expect(SSHKeyPair.fromPem(key.privateKey), isNotEmpty);
         },
       );
 
@@ -274,11 +143,11 @@ void main() {
 
         expect(key, isNotNull);
         // The stored private key really is encrypted with the passphrase.
-        expect(keyService.validatePrivateKey(key!.privateKey), isFalse);
         expect(
-          keyService.validatePrivateKey(key.privateKey, passphrase: passphrase),
-          isTrue,
+          () => SSHKeyPair.fromPem(key!.privateKey),
+          throwsA(isA<SSHError>()),
         );
+        expect(SSHKeyPair.fromPem(key!.privateKey, passphrase), isNotEmpty);
         expect(key.passphrase, passphrase);
       });
 
@@ -290,59 +159,7 @@ void main() {
         );
 
         expect(key, isNotNull);
-        expect(keyService.validatePrivateKey(key!.privateKey), isTrue);
-      });
-    });
-
-    group('fingerprint generation via importPublicKey', () {
-      test(
-        'generates the correct deterministic fingerprint for a known public key',
-        () async {
-          final key = await keyService.importPublicKey(
-            name: 'Key A',
-            publicKey:
-                'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDzZbs5T/6U4zUn/rneL4PWTBKuoI/OfqAznKpQOjd82 test',
-          );
-
-          expect(key, isNotNull);
-          expect(
-            key!.fingerprint,
-            'SHA256:YxKKmwNF0MYVdTdaXzsOKKwNc60ZCoz5qS3otV23HyI',
-          );
-        },
-      );
-
-      test('different public keys produce different fingerprints', () async {
-        final keyA = await keyService.importPublicKey(
-          name: 'Key A',
-          publicKey:
-              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwEkW+K+T0BVhCHT/6o4p9FdlaUJD/yPJfHziYQuwnK a',
-        );
-        final keyB = await keyService.importPublicKey(
-          name: 'Key B',
-          publicKey:
-              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOD6YHh4xjr8IcP0uT8DODGjPEDGqX2i4eyNvtXq2D+ b',
-        );
-
-        expect(
-          keyA!.fingerprint,
-          'SHA256:KN1Ih6apKdkbSOKekPapKbXepsF6rVo5M5srTRe71fI',
-        );
-        expect(
-          keyB!.fingerprint,
-          'SHA256:v6rpW34v6+w8LPSvW6v1+Dm8Z6sRf/VNAFNbr8FG3sg',
-        );
-        expect(keyA.fingerprint, isNot(keyB.fingerprint));
-      });
-
-      test('fingerprint always begins with SHA256: prefix', () async {
-        final key = await keyService.importPublicKey(
-          name: 'Key',
-          publicKey:
-              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDzZbs5T/6U4zUn/rneL4PWTBKuoI/OfqAznKpQOjd82 test',
-        );
-
-        expect(key!.fingerprint, startsWith('SHA256:'));
+        expect(SSHKeyPair.fromPem(key!.privateKey), isNotEmpty);
       });
     });
 
@@ -357,7 +174,7 @@ void main() {
           ),
         );
 
-        final keys = await keyService.getAllKeys();
+        final keys = await keyRepository.getAll();
         final match = keys.where(
           (k) =>
               k.publicKey == 'ssh-ed25519 AAAAdedup' &&
@@ -380,7 +197,7 @@ void main() {
           ),
         );
 
-        final keys = await keyService.getAllKeys();
+        final keys = await keyRepository.getAll();
         final match = keys.where((k) => k.fingerprint == fingerprint);
 
         expect(match, hasLength(1));

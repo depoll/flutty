@@ -13,6 +13,8 @@ class _MockSshClient extends Mock implements ssh.SSHClient {}
 
 class _MockSshExecSession extends Mock implements ssh.SSHSession {}
 
+class _MockByteSink extends Mock implements StreamSink<Uint8List> {}
+
 SshSession _buildShellCompletionSession(
   ssh.SSHClient client, {
   required int connectionId,
@@ -99,8 +101,170 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() {
     registerFallbackValue(const ssh.SSHPtyConfig());
+    registerFallbackValue(Uint8List(0));
   });
   tearDown(resetQueuedSshExecsForTesting);
+
+  for (final history in [false, true]) {
+    test(
+      'stdout collector decodes split UTF-8 and truncates, history=$history',
+      () async {
+        const command = 'éclair';
+        const historyOutput = '__FLUTTY_HISTORY_START__\nbash\t$command\n';
+        const completionOutput = 'command\t$command\n';
+        final retained = history ? historyOutput : completionOutput;
+        final service = ShellCompletionService(
+          maxHistoryOutputChars: history ? retained.length : 80000,
+          maxOutputChars: history ? 12000 : retained.length,
+        );
+        final client = _MockSshClient();
+        final session = _buildShellCompletionSession(
+          client,
+          connectionId: 101,
+          hostId: 101,
+        );
+        final execs = <ssh.SSHSession>[];
+        var calls = 0;
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          final output = !history && calls++ == 0
+              ? ''
+              : '$retained${history ? 'bash' : 'command'}\téother\n';
+          final exec = _MockSshExecSession();
+          execs.add(exec);
+          when(() => exec.stdout).thenAnswer(
+            (_) => Stream.fromIterable(
+              utf8.encode(output).map((byte) => Uint8List.fromList([byte])),
+            ),
+          );
+          when(
+            () => exec.stderr,
+          ).thenAnswer((_) => Stream.value(Uint8List.fromList([1, 2, 3])));
+          when(() => exec.done).thenAnswer((_) => Future<void>.value());
+          return exec;
+        });
+        const invocation = ShellCompletionInvocation(
+          commandLine: 'é',
+          cursorOffset: 1,
+          token: 'é',
+          tokenStart: 0,
+          mode: ShellCompletionMode.command,
+          words: ['é'],
+          workingDirectory: '/repo',
+        );
+        final suggestions = await service.complete(session, invocation);
+        expect(suggestions.map((entry) => entry.label), [command]);
+        for (final exec in execs) {
+          verify(exec.close).called(1);
+          verify(() => exec.stderr).called(1);
+        }
+      },
+    );
+  }
+
+  test(
+    'stdout collector closes completion and history channels on timeout',
+    () async {
+      final service = ShellCompletionService(
+        timeout: const Duration(milliseconds: 10),
+        historyTimeout: const Duration(milliseconds: 10),
+      );
+      final client = _MockSshClient();
+      final session = _buildShellCompletionSession(
+        client,
+        connectionId: 102,
+        hostId: 102,
+      );
+      final execs = <ssh.SSHSession>[];
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+        _,
+      ) async {
+        final exec = _MockSshExecSession();
+        execs.add(exec);
+        when(() => exec.stdout).thenAnswer((_) => const Stream.empty());
+        when(() => exec.stderr).thenAnswer((_) => const Stream.empty());
+        when(() => exec.done).thenAnswer((_) => Completer<void>().future);
+        return exec;
+      });
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'xyz',
+        cursorOffset: 3,
+        token: 'xyz',
+        tokenStart: 0,
+        mode: ShellCompletionMode.command,
+        words: ['xyz'],
+        workingDirectory: '/repo',
+      );
+      await expectLater(
+        service.complete(session, invocation),
+        throwsA(isA<TimeoutException>()),
+      );
+      expect(execs, hasLength(2));
+      for (final exec in execs) {
+        verify(exec.close).called(1);
+      }
+    },
+  );
+
+  test(
+    'interactive collector subscribes before writing and closes once',
+    () async {
+      final client = _MockSshClient();
+      final session = _buildShellCompletionSession(
+        client,
+        connectionId: 103,
+        hostId: 103,
+      );
+      final exec = _MockSshExecSession();
+      final input = _MockByteSink();
+      final output = StreamController<Uint8List>();
+      final done = Completer<void>();
+      when(() => exec.stdout).thenAnswer((_) => output.stream);
+      when(() => exec.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => exec.done).thenAnswer((_) => done.future);
+      when(() => exec.stdin).thenReturn(input);
+      when(() => exec.write(any())).thenAnswer((_) {
+        expect(output.hasListener, isTrue);
+        output.add(
+          Uint8List.fromList(
+            utf8.encode('argument\téclair\n__FLUTTY_ZSH_NATIVE_DONE__\n'),
+          ),
+        );
+      });
+      when(input.close).thenAnswer((_) async {
+        await output.close();
+        done.complete();
+      });
+      final history = _MockSshExecSession();
+      when(() => history.stdout).thenAnswer((_) => const Stream.empty());
+      when(() => history.stderr).thenAnswer((_) => const Stream.empty());
+      when(() => history.done).thenAnswer((_) => Future<void>.value());
+      when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+        (invocation) async =>
+            invocation.namedArguments[#pty] == null ? history : exec,
+      );
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'tool é',
+        cursorOffset: 6,
+        token: 'é',
+        tokenStart: 5,
+        mode: ShellCompletionMode.argument,
+        commandName: 'tool',
+        shellCommand: 'zsh',
+        words: ['tool', 'é'],
+        wordIndex: 1,
+        workingDirectory: '/repo',
+      );
+      final suggestions = await ShellCompletionService().complete(
+        session,
+        invocation,
+      );
+      expect(suggestions.single.label, 'tool éclair');
+      verify(input.close).called(1);
+      verify(exec.close).called(1);
+    },
+  );
 
   group('buildShellCompletionInvocation', () {
     test('uses a captured prompt prefix to isolate the command text', () {
