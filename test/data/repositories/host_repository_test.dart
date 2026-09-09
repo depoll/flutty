@@ -1,7 +1,5 @@
 // ignore_for_file: public_member_api_docs
 
-import 'dart:async';
-
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,31 +9,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/port_proxy_name.dart';
 
-class _PausingSecretEncryptionService extends SecretEncryptionService {
-  _PausingSecretEncryptionService({required this.pausePlaintext})
-    : super.forTesting();
-
-  final String pausePlaintext;
-  final _paused = Completer<void>();
-  final _resume = Completer<void>();
-
-  Future<void> get paused => _paused.future;
-
-  void resume() {
-    if (!_resume.isCompleted) {
-      _resume.complete();
-    }
-  }
-
-  @override
-  Future<String?> encryptNullable(String? plaintext) async {
-    if (plaintext == pausePlaintext && !_paused.isCompleted) {
-      _paused.complete();
-      await _resume.future;
-    }
-    return super.encryptNullable(plaintext);
-  }
-}
+import '../../helpers/pausing_secret_encryption_service.dart';
 
 Map<String, dynamic> _hostConfiguration(Host host) =>
     Map<String, dynamic>.from(host.toJson())
@@ -435,7 +409,7 @@ void main() {
     });
 
     test('legacy password migration does not overwrite newer writes', () async {
-      final encryptionService = _PausingSecretEncryptionService(
+      final encryptionService = PausingSecretEncryptionService(
         pausePlaintext: 'legacy-secret',
       );
       repository = HostRepository(db, encryptionService);

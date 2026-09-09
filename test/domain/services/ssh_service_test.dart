@@ -366,36 +366,9 @@ class _DestroyTrackingSocket implements SSHSocket {
   }
 }
 
-class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
-  _FakeForwardHostKeySocket(this._hostKeyBytes);
-
-  final Uint8List _hostKeyBytes;
-  final _streamController = StreamController<Uint8List>();
-  final _sinkController = StreamController<List<int>>();
-
-  @override
-  Future<Uint8List> get hostKeyBytes async => _hostKeyBytes;
-
-  @override
-  Stream<Uint8List> get stream => _streamController.stream;
-
-  @override
-  StreamSink<List<int>> get sink => _sinkController.sink;
-
-  @override
-  Future<void> close() async {
-    unawaited(_streamController.close());
-    unawaited(_sinkController.close());
-  }
-
-  @override
-  Future<void> flush() async {}
-
-  @override
-  Future<void> get done async {}
-
-  @override
-  void destroy() {}
+class _FakeForwardHostKeySocket extends _FakeHostKeySocket
+    implements SSHForwardChannel {
+  _FakeForwardHostKeySocket(super.hostKeyBytes);
 }
 
 class _RecordingAutomaticForwardSession extends SshSession {

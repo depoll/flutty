@@ -25,6 +25,8 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../test/helpers/live_ssh_terminal_helpers.dart';
+
 const _sshPort = int.fromEnvironment('TUI_THEME_PROOF_SSH_PORT');
 const _sshUser = String.fromEnvironment('TUI_THEME_PROOF_SSH_USER');
 const _sshPrivateKeyBase64 = String.fromEnvironment(
@@ -124,11 +126,11 @@ void main() {
       final terminal = await _pumpProofTerminal(tester, proofCase);
       if (proofCase.startupCommand != null) {
         await tester.pump(const Duration(seconds: 1));
-        _terminalFromView(tester).textInput('${proofCase.startupCommand}\r');
+        terminalFromView(tester).textInput('${proofCase.startupCommand}\r');
       }
-      await _waitForTerminalText(
+      await waitForTerminalText(
         tester,
-        () => _terminalFromView(tester),
+        () => terminalFromView(tester),
         proofCase.expectedText,
         description: 'Timed out waiting for ${proofCase.label}',
         timeout: const Duration(seconds: 90),
@@ -259,14 +261,14 @@ Future<void> _assertThemeSwitchReadable(
 }) async {
   await _switchThemeMode(tester, container, step.mode);
   final token = '${proofCase.tokenPrefix}${step.tokenInfix}$suffix';
-  _terminalFromView(tester).textInput(token);
-  await _waitForTerminalText(
+  terminalFromView(tester).textInput(token);
+  await waitForTerminalText(
     tester,
-    () => _terminalFromView(tester),
+    () => terminalFromView(tester),
     token,
     description: 'Timed out waiting for ${proofCase.label} ${step.id} token',
   );
-  final terminal = _terminalFromView(tester);
+  final terminal = terminalFromView(tester);
   final contrast = _minimumTokenContrast(terminal, step.theme, token);
   final surface = _composerSurfaceForToken(terminal, step.theme, token);
   await _waitForOpenCodeThemeSurface(
@@ -321,11 +323,11 @@ Future<void> _waitForOpenCodeThemeSurface(
     return;
   }
 
-  await _pumpUntil(
+  await pumpUntil(
     tester,
     () {
       final surface = _surfaceForTextOrNull(
-        _terminalFromView(tester),
+        terminalFromView(tester),
         theme,
         proofCase.expectedText,
       );
@@ -348,7 +350,7 @@ Future<void> _waitForOpenCodeThemeSurface(
   );
 
   final surface = _surfaceForTextOrNull(
-    _terminalFromView(tester),
+    terminalFromView(tester),
     theme,
     proofCase.expectedText,
   );
@@ -366,17 +368,17 @@ Future<void> _waitForOpenCodeViewportBackground(
     return;
   }
 
-  await _pumpUntil(
+  await pumpUntil(
     tester,
     () {
-      final stats = _viewportBackgroundStats(_terminalFromView(tester), theme);
+      final stats = _viewportBackgroundStats(terminalFromView(tester), theme);
       return stats.oppositeThemeFraction <= maxOppositeThemeFraction;
     },
     description: description,
     timeout: const Duration(seconds: 20),
   );
 
-  final stats = _viewportBackgroundStats(_terminalFromView(tester), theme);
+  final stats = _viewportBackgroundStats(terminalFromView(tester), theme);
   debugPrint(
     '${proofCase.id} $description oppositeThemeFraction='
     '${stats.oppositeThemeFraction} opposite=${stats.oppositeThemeCells} '
@@ -478,20 +480,9 @@ Future<({ProviderContainer container})> _pumpProofTerminal(
       .setThemeMode(ThemeMode.light);
   await tester.pumpAndSettle();
 
-  await _pumpUntilConnected(tester);
-  await _pumpUntilFound(tester, find.byType(MonkeyTerminalView));
+  await pumpUntilConnected(tester, description: 'SSH connection to proof host');
+  await pumpUntilFound(tester, find.byType(MonkeyTerminalView));
   return (container: container);
-}
-
-Future<void> _pumpUntilConnected(WidgetTester tester) async {
-  await _pumpUntil(
-    tester,
-    () => find.text('Connecting...').evaluate().isEmpty,
-    description: 'SSH connection to proof host',
-    timeout: const Duration(seconds: 60),
-  );
-  expect(find.textContaining('Failed to start shell'), findsNothing);
-  expect(find.textContaining('Connection failed'), findsNothing);
 }
 
 Future<void> _switchThemeMode(
@@ -501,66 +492,6 @@ Future<void> _switchThemeMode(
 ) async {
   await container.read(themeModeNotifierProvider.notifier).setThemeMode(mode);
   await tester.pumpAndSettle(const Duration(seconds: 1));
-}
-
-Terminal _terminalFromView(WidgetTester tester) =>
-    tester.widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView)).terminal;
-
-Future<void> _pumpUntilFound(
-  WidgetTester tester,
-  Finder finder, {
-  Duration timeout = const Duration(seconds: 30),
-}) async {
-  await _pumpUntil(
-    tester,
-    () => finder.evaluate().isNotEmpty,
-    description: 'finder $finder',
-    timeout: timeout,
-  );
-}
-
-Future<void> _pumpUntil(
-  WidgetTester tester,
-  bool Function() predicate, {
-  required String description,
-  Duration timeout = const Duration(seconds: 30),
-  Duration step = const Duration(milliseconds: 100),
-}) async {
-  final end = DateTime.now().add(timeout);
-  while (DateTime.now().isBefore(end)) {
-    await tester.pump(step);
-    if (predicate()) {
-      return;
-    }
-  }
-  fail('Timed out waiting for $description');
-}
-
-Future<void> _waitForTerminalText(
-  WidgetTester tester,
-  Terminal Function() terminal,
-  String expected, {
-  required String description,
-  Duration timeout = const Duration(seconds: 20),
-}) async {
-  await _pumpUntil(
-    tester,
-    () => _terminalBufferText(terminal()).contains(expected),
-    description: '$description\n${_terminalBufferText(terminal())}',
-    timeout: timeout,
-  );
-}
-
-String _terminalBufferText(Terminal terminal) {
-  final lines = <String>[];
-  for (var index = 0; index < terminal.buffer.lines.length; index += 1) {
-    lines.add(
-      terminal.buffer.lines[index]
-          .getText(0, terminal.buffer.viewWidth)
-          .trimRight(),
-    );
-  }
-  return lines.join('\n');
 }
 
 double _minimumTokenContrast(

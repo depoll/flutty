@@ -5,6 +5,8 @@ import 'package:integration_test/integration_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
+import '../test/helpers/terminal_input_helpers.dart';
+
 const _deleteDetectionMarker = '\u200B\u200B';
 
 Duration _validationSummaryHoldDuration(int seconds) =>
@@ -16,65 +18,6 @@ Duration? _holdValidationSummaryDuration() {
     return null;
   }
   return _validationSummaryHoldDuration(seconds);
-}
-
-({String text, int cursorOffset}) _terminalStateFromEvents(
-  Iterable<String> events,
-) {
-  final visibleCharacters = <String>[];
-  var cursorOffset = 0;
-  for (final event in events) {
-    var offset = 0;
-    while (offset < event.length) {
-      if (event.startsWith('\u001b[D', offset)) {
-        if (cursorOffset > 0) {
-          cursorOffset--;
-        }
-        offset += 3;
-        continue;
-      }
-      if (event.startsWith('\u001b[C', offset)) {
-        if (cursorOffset < visibleCharacters.length) {
-          cursorOffset++;
-        }
-        offset += 3;
-        continue;
-      }
-
-      final character = event.substring(offset).characters.first;
-      offset += character.length;
-      if (character == '\x7f') {
-        if (cursorOffset > 0) {
-          visibleCharacters.removeAt(cursorOffset - 1);
-          cursorOffset--;
-        }
-        continue;
-      }
-      visibleCharacters.insert(cursorOffset, character);
-      cursorOffset++;
-    }
-  }
-  return (text: visibleCharacters.join(), cursorOffset: cursorOffset);
-}
-
-Future<void> _commitSwipeText(WidgetTester tester, String text) async {
-  final selection = TextSelection.collapsed(offset: text.length);
-  tester.testTextInput.updateEditingValue(
-    TextEditingValue(
-      text: text,
-      selection: selection,
-      composing: TextRange(
-        start: _deleteDetectionMarker.length,
-        end: text.length,
-      ),
-    ),
-  );
-  await tester.pump();
-
-  tester.testTextInput.updateEditingValue(
-    TextEditingValue(text: text, selection: selection),
-  );
-  await tester.pump();
 }
 
 class _ValidationCase {
@@ -255,7 +198,7 @@ Future<_ValidationResult> _runCase(
   final client =
       tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
   final editingValue = client.currentTextEditingValue;
-  final terminalState = _terminalStateFromEvents(terminalOutput);
+  final terminalState = terminalStateFromEvents(terminalOutput);
   final result = _ValidationResult(
     testCase: testCase,
     visibleText: terminalState.text,
@@ -648,19 +591,19 @@ void main() {
 }
 
 Future<void> _runFirstSwipeWordCase(WidgetTester tester) async {
-  await _commitSwipeText(tester, '$_deleteDetectionMarker\nhello');
+  await commitSwipeText(tester, '$_deleteDetectionMarker\nhello');
 }
 
 String _resolveTerminalTextWithoutTrailingSpace() => 'echo ready';
 
 Future<void> _runResumeSwipeSeparatorCase(WidgetTester tester) async {
-  await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+  await commitSwipeText(tester, '$_deleteDetectionMarker world');
 }
 
 String _resolveTerminalTextWithTrailingSpace() => 'echo ready ';
 
 Future<void> _runNoDuplicateSeparatorCase(WidgetTester tester) async {
-  await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+  await commitSwipeText(tester, '$_deleteDetectionMarker world');
 }
 
 Future<void> _runReplacementAfterDeleteCase(WidgetTester tester) async {
