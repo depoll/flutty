@@ -20,12 +20,37 @@ void main() {
   });
 
   test('requires a newline to complete a marker', () async {
-    final result = await readCommandOutputUntilMarker(
-      Stream.value('output\ndone:0'),
-      'done',
+    await expectLater(
+      readCommandOutputUntilMarker(Stream.value('output\ndone:0'), 'done'),
+      throwsException,
     );
-    expect(result, (output: 'output\ndone:0', status: null));
   });
+
+  test('fails promptly when stdout closes without a marker', () async {
+    for (final output in ['', 'partial output\n']) {
+      await expectLater(
+        readCommandOutputUntilMarker(
+          Stream.value(output).timeout(const Duration(minutes: 1)),
+          'done',
+        ).timeout(const Duration(seconds: 1)),
+        throwsA(allOf(isException, isNot(isA<TimeoutException>()))),
+      );
+    }
+  });
+
+  test(
+    'partial-output callers retain output on EOF without a marker',
+    () async {
+      expect(
+        await readCommandOutputUntilMarker(
+          Stream.value('output\ndone:0'),
+          'done',
+          allowPartialOnTimeout: true,
+        ),
+        (output: 'output\ndone:0', status: null),
+      );
+    },
+  );
 
   test('retains timeout output only when requested', () async {
     Stream<String> chunks() async* {

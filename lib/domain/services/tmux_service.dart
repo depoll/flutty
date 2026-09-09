@@ -2200,25 +2200,31 @@ class TmuxService {
     required int connectionId,
     required String commandKind,
   }) async {
-    final result = await readCommandOutputUntilMarker(
-      execSession.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .timeout(_execOutputTimeout)
-          .map((chunk) {
-            DiagnosticsLogService.instance.debug(
-              'tmux.exec',
-              'stdout_chunk',
-              fields: {
-                'connectionId': connectionId,
-                'commandKind': commandKind,
-                'charCount': chunk.length,
-              },
-            );
-            return chunk;
-          }),
-      _execDoneMarker,
-    );
+    ({String output, int? status}) result;
+    try {
+      result = await readCommandOutputUntilMarker(
+        execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .timeout(_execOutputTimeout),
+        _execDoneMarker,
+        // Observe chunks without wrapping stdout in another stream whose
+        // cancellation can delay EOF and keep the queued exec slot occupied.
+        onChunk: (chunk) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.exec',
+            'stdout_chunk',
+            fields: {
+              'connectionId': connectionId,
+              'commandKind': commandKind,
+              'charCount': chunk.length,
+            },
+          );
+        },
+      );
+    } on CommandOutputMarkerMissingException {
+      result = (output: '', status: null);
+    }
     final status = result.status;
     if (status == 0) return result.output.trimRight();
     DiagnosticsLogService.instance.warning(
