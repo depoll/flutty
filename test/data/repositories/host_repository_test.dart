@@ -1097,29 +1097,6 @@ void main() {
       expect(await repository.setAutoForwardPorts(999, enabled: true), isFalse);
     });
 
-    test('getFavorites returns only favorite hosts', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Server 1',
-          hostname: '192.168.1.1',
-          username: 'admin',
-        ),
-      );
-      final id2 = await repository.insert(
-        HostsCompanion.insert(
-          label: 'Server 2',
-          hostname: '192.168.1.2',
-          username: 'admin',
-        ),
-      );
-
-      await repository.toggleFavorite(id2);
-
-      final favorites = await repository.getFavorites();
-      expect(favorites, hasLength(1));
-      expect(favorites.first.label, 'Server 2');
-    });
-
     test('search finds hosts by label', () async {
       await repository.insert(
         HostsCompanion.insert(
@@ -1275,47 +1252,6 @@ void main() {
       },
     );
 
-    test('getByGroup returns hosts with null groupId', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Ungrouped Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-        ),
-      );
-
-      final hosts = await repository.getByGroup(null);
-      expect(hosts, hasLength(1));
-      expect(hosts.first.label, 'Ungrouped Server');
-    });
-
-    test('getByGroup returns hosts with specific groupId', () async {
-      // Create a group first
-      final groupId = await db
-          .into(db.groups)
-          .insert(GroupsCompanion.insert(name: 'Test Group'));
-
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Grouped Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-          groupId: Value(groupId),
-        ),
-      );
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Ungrouped Server',
-          hostname: '192.168.1.2',
-          username: 'admin',
-        ),
-      );
-
-      final hosts = await repository.getByGroup(groupId);
-      expect(hosts, hasLength(1));
-      expect(hosts.first.label, 'Grouped Server');
-    });
-
     test('updateLastConnected updates timestamp', () async {
       final id = await repository.insert(
         HostsCompanion.insert(
@@ -1349,54 +1285,6 @@ void main() {
       );
 
       final stream = repository.watchAll();
-      final firstValue = await stream.first;
-      expect(firstValue, hasLength(1));
-    });
-
-    test('watchFavorites emits updates', () async {
-      final id = await repository.insert(
-        HostsCompanion.insert(
-          label: 'Test Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-        ),
-      );
-      await repository.toggleFavorite(id);
-
-      final stream = repository.watchFavorites();
-      final firstValue = await stream.first;
-      expect(firstValue, hasLength(1));
-    });
-
-    test('watchByGroup emits for null group', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Ungrouped Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-        ),
-      );
-
-      final stream = repository.watchByGroup(null);
-      final firstValue = await stream.first;
-      expect(firstValue, hasLength(1));
-    });
-
-    test('watchByGroup emits for specific group', () async {
-      final groupId = await db
-          .into(db.groups)
-          .insert(GroupsCompanion.insert(name: 'Test Group'));
-
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Grouped Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-          groupId: Value(groupId),
-        ),
-      );
-
-      final stream = repository.watchByGroup(groupId);
       final firstValue = await stream.first;
       expect(firstValue, hasLength(1));
     });

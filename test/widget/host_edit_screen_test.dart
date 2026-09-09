@@ -38,6 +38,7 @@ Host _testHost({
   String? remoteMuxBackend,
   String? terminalThemeLightId,
   String? terminalThemeDarkId,
+  String? terminalFontFamily,
 }) => Host(
   id: id,
   label: label,
@@ -57,6 +58,7 @@ Host _testHost({
   remoteMuxBackend: remoteMuxBackend,
   terminalThemeLightId: terminalThemeLightId,
   terminalThemeDarkId: terminalThemeDarkId,
+  terminalFontFamily: terminalFontFamily,
   sortOrder: 0,
 );
 
@@ -1984,7 +1986,7 @@ void main() {
       expect(commandField.readOnly, isTrue);
     });
 
-    testWidgets('clears selected light and dark themes using the clear buttons', (
+    testWidgets('selects a host font and saves reset font and theme overrides', (
       tester,
     ) async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
@@ -2000,6 +2002,7 @@ void main() {
           autoConnectRequiresConfirmation: false,
           terminalThemeLightId: 'iterm2-monokai-pro',
           terminalThemeDarkId: 'iterm2-dracula',
+          terminalFontFamily: 'monospace',
         ),
         database: database,
         encryptionService: encryptionService,
@@ -2071,7 +2074,7 @@ void main() {
       // Find the clear buttons and tap them. Since both tiles show a clear button,
       // we can find by Icon(Icons.clear). Let's verify we have 2 clear icons.
       final clearButtons = find.byIcon(Icons.clear);
-      expect(clearButtons, findsNWidgets(2));
+      expect(clearButtons, findsNWidgets(3));
 
       // Tap the first one (Light theme clear button)
       await tester.tap(clearButtons.first);
@@ -2082,12 +2085,28 @@ void main() {
       expect(find.text('Dracula'), findsOneWidget);
 
       // Tap the remaining clear button
-      await tester.tap(find.byIcon(Icons.clear));
+      await tester.tap(find.byIcon(Icons.clear).first);
       await tester.pump();
 
       // Verify both are cleared
       expect(find.text('Dracula'), findsNothing);
       expect(find.text('Monokai Pro'), findsNothing);
+
+      await tester.scrollUntilVisible(
+        find.text('Terminal Font'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Terminal Font'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('JetBrains Mono'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('JetBrains Mono'), findsOneWidget);
+      await tester.tap(find.byTooltip('Reset to default'));
+      await tester.pump();
+      expect(find.text('JetBrains Mono'), findsNothing);
 
       // Tap save
       final saveButton = find.byKey(
@@ -2108,6 +2127,7 @@ void main() {
       expect(hostRepository.updatedHost, isNotNull);
       expect(hostRepository.updatedHost!.terminalThemeLightId, isNull);
       expect(hostRepository.updatedHost!.terminalThemeDarkId, isNull);
+      expect(hostRepository.updatedHost!.terminalFontFamily, isNull);
     });
   });
 }

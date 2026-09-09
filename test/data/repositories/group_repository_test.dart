@@ -96,15 +96,6 @@ void main() {
       expect(deleted, 0);
     });
 
-    test('getRootGroups returns groups without parent', () async {
-      await repository.insert(GroupsCompanion.insert(name: 'Root Group'));
-
-      final roots = await repository.getRootGroups();
-      expect(roots, hasLength(1));
-      expect(roots.first.name, 'Root Group');
-      expect(roots.first.parentId, isNull);
-    });
-
     test('getChildren returns child groups', () async {
       final parentId = await repository.insert(
         GroupsCompanion.insert(name: 'Parent'),
@@ -140,7 +131,9 @@ void main() {
         GroupsCompanion.insert(name: 'Level 3', parentId: Value(level2)),
       );
 
-      final roots = await repository.getRootGroups();
+      final roots = (await repository.getAll())
+          .where((group) => group.parentId == null)
+          .toList();
       expect(roots, hasLength(1));
       expect(roots.first.name, 'Level 1');
 
@@ -157,27 +150,6 @@ void main() {
       await repository.insert(GroupsCompanion.insert(name: 'New Group'));
 
       final stream = repository.watchAll();
-      final firstValue = await stream.first;
-      expect(firstValue, hasLength(1));
-    });
-
-    test('watchRootGroups emits updates', () async {
-      await repository.insert(GroupsCompanion.insert(name: 'Root Group'));
-
-      final stream = repository.watchRootGroups();
-      final firstValue = await stream.first;
-      expect(firstValue, hasLength(1));
-    });
-
-    test('watchChildren emits updates', () async {
-      final parentId = await repository.insert(
-        GroupsCompanion.insert(name: 'Parent'),
-      );
-      await repository.insert(
-        GroupsCompanion.insert(name: 'Child', parentId: Value(parentId)),
-      );
-
-      final stream = repository.watchChildren(parentId);
       final firstValue = await stream.first;
       expect(firstValue, hasLength(1));
     });

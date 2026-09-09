@@ -1499,7 +1499,6 @@ const _terminalFollowOutputTolerance = 1.0;
 const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
-const _terminalSelectionNearbySearchColumns = 4;
 const _recentLocalClipboardProtection = Duration(seconds: 5);
 const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalSelectionSnippetNameMaxLength = 60;
@@ -2988,17 +2987,6 @@ String? resolveTerminalFileUriPath(String link) {
   return Uri.decodeComponent(uri.path);
 }
 
-/// Extracts the currently selected text from the native selection overlay.
-@visibleForTesting
-String selectedNativeOverlayText(TextEditingValue value) {
-  final selection = value.selection;
-  if (!selection.isValid || selection.isCollapsed) {
-    return '';
-  }
-
-  return selection.textInside(value.text);
-}
-
 /// Chooses the platform keyboard appearance that best matches a terminal theme.
 @visibleForTesting
 Brightness resolveTerminalKeyboardAppearance(TerminalThemeData theme) =>
@@ -3147,170 +3135,6 @@ bool shouldForceSgrTouchScroll({
 }) =>
     (activeWindowReportsMouseWheel ?? false) &&
     (activeWindowMouseReportSgr ?? false);
-
-/// Whether the native selection overlay should be visible for terminal content.
-@visibleForTesting
-bool shouldShowNativeSelectionOverlay({
-  required bool isNativeSelectionMode,
-  required bool routesTouchScrollToTerminal,
-  required bool revealOverlayInTouchScrollMode,
-}) => isNativeSelectionMode;
-
-/// Whether the native overlay currently holds an expanded text selection.
-@visibleForTesting
-bool hasActiveNativeOverlaySelection(TextSelection selection) =>
-    selection.isValid && !selection.isCollapsed;
-
-/// Resolves the terminal range to select for a touch long-press.
-///
-/// xterm's word selection returns null on separators and blank cells. Mobile
-/// touch selection should still start when the finger lands on punctuation in a
-/// path/URL or slightly misses a word, so this falls back to separator runs and
-/// nearby selectable cells on the same row.
-@visibleForTesting
-BufferRange? resolveNativeTouchSelectionRange({
-  required Buffer buffer,
-  required CellOffset cellOffset,
-  int nearbySearchColumns = _terminalSelectionNearbySearchColumns,
-}) {
-  if (buffer.height <= 0 || buffer.viewWidth <= 0) {
-    return null;
-  }
-
-  final row = cellOffset.y.clamp(0, buffer.height - 1);
-  final column = cellOffset.x.clamp(0, buffer.viewWidth - 1);
-  final exactOffset = CellOffset(column, row);
-  final exactSeparatorRange = _resolveTerminalSeparatorSelectionRange(
-    buffer: buffer,
-    row: row,
-    column: column,
-  );
-  if (exactSeparatorRange != null) {
-    return exactSeparatorRange;
-  }
-
-  if (!_isTerminalSelectionBlank(buffer, row, column)) {
-    final exactWordRange = buffer.getWordBoundary(exactOffset);
-    if (exactWordRange != null) {
-      return exactWordRange;
-    }
-  }
-
-  final searchLimit = nearbySearchColumns.clamp(0, buffer.viewWidth);
-  for (var distance = 1; distance <= searchLimit; distance++) {
-    final leftColumn = column - distance;
-    if (leftColumn >= 0) {
-      final leftRange = _resolveNativeTouchSelectionRangeAtColumn(
-        buffer: buffer,
-        row: row,
-        column: leftColumn,
-      );
-      if (leftRange != null) {
-        return leftRange;
-      }
-    }
-
-    final rightColumn = column + distance;
-    if (rightColumn < buffer.viewWidth) {
-      final rightRange = _resolveNativeTouchSelectionRangeAtColumn(
-        buffer: buffer,
-        row: row,
-        column: rightColumn,
-      );
-      if (rightRange != null) {
-        return rightRange;
-      }
-    }
-  }
-
-  return null;
-}
-
-BufferRange? _resolveNativeTouchSelectionRangeAtColumn({
-  required Buffer buffer,
-  required int row,
-  required int column,
-}) {
-  final separatorRange = _resolveTerminalSeparatorSelectionRange(
-    buffer: buffer,
-    row: row,
-    column: column,
-  );
-  if (separatorRange != null) {
-    return separatorRange;
-  }
-  if (_isTerminalSelectionBlank(buffer, row, column)) {
-    return null;
-  }
-  final offset = CellOffset(column, row);
-  return buffer.getWordBoundary(offset);
-}
-
-BufferRangeLine? _resolveTerminalSeparatorSelectionRange({
-  required Buffer buffer,
-  required int row,
-  required int column,
-}) {
-  if (!_isTerminalSelectableSeparator(buffer, row, column)) {
-    return null;
-  }
-
-  var start = column;
-  while (start > 0 && _isTerminalSelectableSeparator(buffer, row, start - 1)) {
-    start--;
-  }
-
-  var end = column + 1;
-  while (end < buffer.viewWidth &&
-      _isTerminalSelectableSeparator(buffer, row, end)) {
-    end++;
-  }
-
-  return BufferRangeLine(CellOffset(start, row), CellOffset(end, row));
-}
-
-bool _isTerminalSelectableSeparator(Buffer buffer, int row, int column) {
-  if (_isTerminalSelectionBlank(buffer, row, column)) {
-    return false;
-  }
-  final separators = buffer.wordSeparators ?? Buffer.defaultWordSeparators;
-  return separators.contains(buffer.lines[row].getCodePoint(column));
-}
-
-bool _isTerminalSelectionBlank(Buffer buffer, int row, int column) {
-  final codePoint = buffer.lines[row].getCodePoint(column);
-  return codePoint == 0 || codePoint == 0x20 || codePoint == 0x09;
-}
-
-/// Builds native selection context menu items with paste routed to the terminal.
-@visibleForTesting
-List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
-  required List<ContextMenuButtonItem> defaultItems,
-  required VoidCallback onPaste,
-}) {
-  final buttonItems = <ContextMenuButtonItem>[];
-  for (final item in defaultItems) {
-    switch (item.type) {
-      case ContextMenuButtonType.cut:
-      case ContextMenuButtonType.delete:
-      case ContextMenuButtonType.selectAll:
-        // These actions do not have a meaningful terminal selection behavior.
-        continue;
-      case ContextMenuButtonType.paste:
-        // Replaced below with terminal-aware paste.
-        continue;
-      default:
-        buttonItems.add(item);
-    }
-  }
-  buttonItems.add(
-    ContextMenuButtonItem(
-      type: ContextMenuButtonType.paste,
-      onPressed: onPaste,
-    ),
-  );
-  return buttonItems;
-}
 
 /// Builds terminal selection context menu items with terminal-aware callbacks.
 @visibleForTesting
@@ -3476,56 +3300,6 @@ bool shouldResolveTerminalTapLinks({
   required bool showsNativeSelectionOverlay,
 }) => !showsNativeSelectionOverlay;
 
-typedef _NativeSelectionSnapshotData = ({
-  String text,
-  List<int> lineStarts,
-  List<List<int>> columnOffsets,
-  int lineCount,
-  int viewWidth,
-  int textLength,
-});
-
-typedef _PendingTouchSelectionSnapshot = ({
-  CellOffset originCellOffset,
-  String text,
-  TextSelection selection,
-  List<int> lineStarts,
-  List<List<int>> columnOffsets,
-  int lineCount,
-  int viewWidth,
-  int textLength,
-  bool revealOverlayInTouchScrollMode,
-});
-
-/// How a native selection change should update the mobile overlay state.
-@visibleForTesting
-enum NativeSelectionOverlayChange {
-  /// Leaves the current overlay and selection mode state unchanged.
-  none,
-
-  /// Leaves native selection mode entirely so terminal input becomes editable.
-  exitSelectionMode,
-}
-
-/// Resolves how collapsed mobile selections should unwind overlay state.
-@visibleForTesting
-NativeSelectionOverlayChange resolveNativeSelectionOverlayChange({
-  required bool isMobilePlatform,
-  required bool isNativeSelectionMode,
-  required bool revealOverlayInTouchScrollMode,
-  required TextSelection selection,
-}) {
-  if (!isNativeSelectionMode || !selection.isCollapsed) {
-    return NativeSelectionOverlayChange.none;
-  }
-
-  if (isMobilePlatform) {
-    return NativeSelectionOverlayChange.exitSelectionMode;
-  }
-
-  return NativeSelectionOverlayChange.none;
-}
-
 String? _describeMouseMode(
   MouseMode mouseMode,
   MouseReportMode mouseReportMode,
@@ -3620,6 +3394,23 @@ class _NativeAcpLaunchState {
 
 final Expando<List<AgentRuntimeInfo>> _agentUpdateRuntimes =
     Expando<List<AgentRuntimeInfo>>('agentUpdateRuntimes');
+
+/// Sanitized diagnostic category and user message for a picked-file failure.
+@visibleForTesting
+({String category, String message}) pickedFileFailure(
+  Object error,
+  String context,
+) => (
+  category: switch (error) {
+    PlatformException() => 'picker_failed',
+    FileSystemException() => 'picked_file_failed',
+    SftpError() => 'picked_remote_upload_failed',
+    _ => 'picked_upload_failed',
+  },
+  message: error is SftpError
+      ? 'Remote upload failed. Check permissions and try again.'
+      : '$context failed. Try again.',
+);
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -3745,9 +3536,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
-  late final ScrollController _nativeSelectionScrollController;
-  late final TextEditingController _nativeSelectionController;
-  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
   final _systemKeyboardVisibilityController =
@@ -3778,12 +3566,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   List<KeyboardToolbarSnippetFolder> _keyboardToolbarSnippetFolders =
       const <KeyboardToolbarSnippetFolder>[];
   bool _isNativeSelectionMode = false;
-  bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
-  bool _isSyncingNativeScroll = false;
-  bool _hadNativeOverlaySelection = false;
   bool _shellCompletionsEnabled = false;
-  _NativeSelectionSnapshotData? _nativeSelectionSnapshotCache;
-  Timer? _nativeOverlayCollapseTimer;
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
@@ -4202,10 +3985,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     diagnostics.debug('android.back', 'terminal_content_state', fields: fields);
   }
 
-  bool get _hasExpandedNativeOverlaySelection =>
-      _isNativeSelectionMode &&
-      hasActiveNativeOverlaySelection(_nativeSelectionController.selection);
-
   bool get _hasActiveSystemSelection {
     final selection = _terminalController.selection;
     return selection != null && !selection.isCollapsed;
@@ -4213,7 +3992,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _isTerminalOutputFollowPaused =>
       _terminalOutputPauseTouchPointers.isNotEmpty ||
-      _hasExpandedNativeOverlaySelection ||
+      (_isNativeSelectionMode && _readSystemSelectionPlainText() != null) ||
       _hasActiveSystemSelection;
 
   bool get _terminalLiveOutputAutoScrollEnabled =>
@@ -4550,13 +4329,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
   ];
 
-  bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
-    isNativeSelectionMode: _isNativeSelectionMode,
-    routesTouchScrollToTerminal: _routesTouchScrollToTerminal,
-    revealOverlayInTouchScrollMode:
-        _revealsNativeSelectionOverlayInTouchScrollMode,
-  );
-
   String? get _windowTitle => _observedSession?.windowTitle;
 
   SshSession? get _observedSession => _sessionController.observedSession;
@@ -4771,11 +4543,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
       ..addListener(_handleTerminalScroll);
-    _nativeSelectionScrollController = ScrollController()
-      ..addListener(_syncTerminalScrollFromNative);
-    _nativeSelectionController = TextEditingController()
-      ..addListener(_onNativeOverlayControllerChanged);
-    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -4819,12 +4586,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
-    _nativeSelectionSnapshotCache = null;
     _terminalContentGeneration++;
     _syncShellCompletionOptimisticSnapshotWithTerminal();
-    if (_isNativeSelectionMode && !_hasExpandedNativeOverlaySelection) {
-      _refreshNativeOverlayText(preserveSelection: true);
-    }
 
     _queueVisibleTerminalPathUnderlineRefresh();
     _scheduleMissingImageRecoveryRequest();
@@ -6673,7 +6436,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       );
     }
-    _syncNativeScrollFromTerminal();
     _scheduleScrollTerminalPathUnderlineRefresh();
   }
 
@@ -6775,7 +6537,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         output: output,
         isUsingAltBuffer: _isUsingAltBuffer,
         isTmuxActive: _isTmuxActive,
-        showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+        showsNativeSelectionOverlay: _isNativeSelectionMode,
       );
 
   bool _hasKnownNonShellCompletionContext() {
@@ -7190,7 +6952,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     if (!ref.read(shellCompletionsNotifierProvider) ||
         (_isUsingAltBuffer && !_isTmuxActive) ||
-        _showsNativeSelectionOverlay) {
+        _isNativeSelectionMode) {
       return null;
     }
     if (requirePromptContext &&
@@ -7406,41 +7168,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isTerminalOutputFollowPaused) {
       _queueTerminalScrollToBottom();
     }
-  }
-
-  void _syncNativeScrollFromTerminal({bool force = false}) {
-    if (!_showsNativeSelectionOverlay ||
-        (!force && _hasExpandedNativeOverlaySelection) ||
-        _isSyncingNativeScroll ||
-        !_terminalScrollController.hasClients ||
-        !_nativeSelectionScrollController.hasClients) {
-      return;
-    }
-
-    _isSyncingNativeScroll = true;
-    final targetOffset = _terminalScrollController.offset.clamp(
-      0.0,
-      _nativeSelectionScrollController.position.maxScrollExtent,
-    );
-    _nativeSelectionScrollController.jumpTo(targetOffset);
-    _isSyncingNativeScroll = false;
-  }
-
-  void _syncTerminalScrollFromNative() {
-    if (!_showsNativeSelectionOverlay ||
-        _isSyncingNativeScroll ||
-        !_nativeSelectionScrollController.hasClients ||
-        !_terminalScrollController.hasClients) {
-      return;
-    }
-
-    _isSyncingNativeScroll = true;
-    final targetOffset = _nativeSelectionScrollController.offset.clamp(
-      0.0,
-      _terminalScrollController.position.maxScrollExtent,
-    );
-    _terminalScrollController.jumpTo(targetOffset);
-    _isSyncingNativeScroll = false;
   }
 
   Future<void> _loadHostAndConnect() async {
@@ -13318,11 +13045,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       shouldRefreshFollowState = true;
     }
     if (_isNativeSelectionMode) {
-      if (_isMobilePlatform) {
-        _dismissNativeSelectionOverlayForEditing();
-      } else {
-        _exitNativeSelectionMode();
-      }
+      _exitNativeSelectionMode();
       shouldRefreshFollowState = true;
     } else if (_terminalController.selection != null) {
       _terminalController.clearSelection();
@@ -13888,14 +13611,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalScrollController
       ..removeListener(_handleTerminalScroll)
       ..dispose();
-    _nativeSelectionScrollController
-      ..removeListener(_syncTerminalScrollFromNative)
-      ..dispose();
-    _nativeSelectionController
-      ..removeListener(_onNativeOverlayControllerChanged)
-      ..dispose();
-    _nativeOverlayCollapseTimer?.cancel();
-    _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _shellCommandCompletedSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
@@ -14674,7 +14389,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
-    _dismissNativeSelectionOverlayForEditing();
     final restoreGeneration = _terminalFocusRestoreGeneration;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || restoreGeneration != _terminalFocusRestoreGeneration) {
@@ -15328,9 +15042,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTap: _handleTerminalLinkTap,
       suppressLongPressDragSelection: isMobile,
       liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
-      useSystemSelection: isMobile,
-      systemSelectionContextMenuBuilder: isMobile
-          ? _buildTerminalSelectionContextMenu
+      useSystemSelection: isMobile || _isNativeSelectionMode,
+      systemSelectionContextMenuBuilder: _buildTerminalSelectionContextMenu,
+      onSystemSelectionChanged: _isNativeSelectionMode
+          ? (_) => _onSelectionChanged()
           : null,
       focusNode: _terminalFocusNode,
       cursorFocusNode: isMobile ? _terminalFocusNode : null,
@@ -15490,10 +15205,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       sensitiveInput: _detectedSensitiveKeyboardPrompt,
-      readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
+      readOnly: _isNativeSelectionMode || overlayMessage != null,
       tapToShowKeyboard:
           ref.watch(tapToShowKeyboardNotifierProvider) &&
-          !_showsNativeSelectionOverlay &&
+          !_isNativeSelectionMode &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
       manageFocus: false,
@@ -15946,152 +15661,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _toggleNativeSelectionMode() {
-    if (_isMobilePlatform) {
-      return;
-    }
+    if (_isMobilePlatform) return;
     if (_isNativeSelectionMode) {
       _exitNativeSelectionMode();
-      return;
-    }
-
-    _enterNativeSelectionMode(initialRange: _terminalController.selection);
-  }
-
-  void _enterNativeSelectionMode({
-    BufferRange? initialRange,
-    bool revealOverlayInTouchScrollMode = false,
-  }) {
-    if (_isNativeSelectionMode && initialRange == null) {
-      return;
-    }
-
-    _terminalFocusNode.unfocus();
-    final snapshot = _buildNativeSelectionSnapshotData();
-    final selection = initialRange == null
-        ? const TextSelection.collapsed(offset: 0)
-        : _bufferRangeToTextSelection(
-            initialRange,
-            viewWidth: _terminal.buffer.viewWidth,
-            lineCount: _terminal.buffer.height,
-            lineStarts: snapshot.lineStarts,
-            columnOffsets: snapshot.columnOffsets,
-            textLength: snapshot.textLength,
-          );
-    _enterNativeSelectionModeWithSnapshot((
-      originCellOffset:
-          initialRange?.normalized.begin ?? const CellOffset(0, 0),
-      text: snapshot.text,
-      selection: selection,
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      lineCount: snapshot.lineCount,
-      viewWidth: snapshot.viewWidth,
-      textLength: snapshot.textLength,
-      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
-    ));
-  }
-
-  void _enterNativeSelectionModeWithSnapshot(
-    _PendingTouchSelectionSnapshot snapshot,
-  ) {
-    _nativeSelectionController.value = TextEditingValue(
-      text: snapshot.text,
-      selection: snapshot.selection,
-    );
-    _hadNativeOverlaySelection = hasActiveNativeOverlaySelection(
-      snapshot.selection,
-    );
-    _nativeOverlayCollapseTimer?.cancel();
-    setState(() {
-      _isNativeSelectionMode = true;
-      _revealsNativeSelectionOverlayInTouchScrollMode =
-          _revealsNativeSelectionOverlayInTouchScrollMode ||
-          snapshot.revealOverlayInTouchScrollMode;
-    });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_isNativeSelectionMode) {
-        return;
-      }
-      _syncNativeScrollFromTerminal(force: true);
-      _nativeSelectionFocusNode.requestFocus();
-      if (!_nativeSelectionController.selection.isCollapsed) {
-        _nativeSelectionController.selection = snapshot.selection;
-      }
-    });
-    if (_terminalController.selection != null) {
+    } else {
       _terminalController.clearSelection();
+      _terminalFocusNode.unfocus();
+      setState(() => _isNativeSelectionMode = true);
     }
   }
 
   void _exitNativeSelectionMode() {
-    if (_isMobilePlatform) {
-      return;
-    }
-    _nativeSelectionFocusNode.unfocus();
-    setState(() {
-      _isNativeSelectionMode = false;
-      _revealsNativeSelectionOverlayInTouchScrollMode = false;
-    });
-    _nativeSelectionController.clear();
+    if (!mounted || !_isNativeSelectionMode) return;
+    setState(() => _isNativeSelectionMode = false);
     _terminalController.clearSelection();
-    _hadNativeOverlaySelection = false;
-    _nativeOverlayCollapseTimer?.cancel();
     _terminalFocusNode.requestFocus();
-  }
-
-  void _refreshNativeOverlayText({required bool preserveSelection}) {
-    if (!_isNativeSelectionMode) {
-      return;
-    }
-    final snapshot = _buildNativeSelectionSnapshotData();
-    final previousSelection = _nativeSelectionController.selection;
-    final maxOffset = snapshot.textLength;
-    final nextSelection = preserveSelection
-        ? TextSelection(
-            baseOffset: previousSelection.baseOffset.clamp(0, maxOffset),
-            extentOffset: previousSelection.extentOffset.clamp(0, maxOffset),
-          )
-        : const TextSelection.collapsed(offset: 0);
-    _nativeSelectionController.value = TextEditingValue(
-      text: snapshot.text,
-      selection: nextSelection,
-    );
-  }
-
-  _NativeSelectionSnapshotData _buildNativeSelectionSnapshotData() {
-    final cachedSnapshot = _nativeSelectionSnapshotCache;
-    if (cachedSnapshot != null) {
-      return cachedSnapshot;
-    }
-
-    final buffer = _terminal.buffer;
-    final builder = StringBuffer();
-    final lineStarts = <int>[];
-    final lineColumnOffsets = <List<int>>[];
-
-    for (var i = 0; i < buffer.height; i++) {
-      lineStarts.add(builder.length);
-      final lineSnapshot = _buildNativeSelectionLineSnapshot(
-        buffer.lines[i],
-        buffer.viewWidth,
-      );
-      builder.write(lineSnapshot.text);
-      lineColumnOffsets.add(lineSnapshot.columnOffsets);
-      if (i < buffer.height - 1) {
-        builder.write('\n');
-      }
-    }
-
-    final snapshot = (
-      text: builder.toString(),
-      lineStarts: lineStarts,
-      columnOffsets: lineColumnOffsets,
-      lineCount: buffer.height,
-      viewWidth: buffer.viewWidth,
-      textLength: builder.length,
-    );
-    _nativeSelectionSnapshotCache = snapshot;
-    return snapshot;
   }
 
   ({String text, List<int> columnOffsets}) _buildTerminalLineSnapshot(
@@ -16156,108 +15740,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     preserveTrailingPadding: false,
   );
 
-  TextSelection _bufferRangeToTextSelection(
-    BufferRange range, {
-    required int viewWidth,
-    required int lineCount,
-    required List<int> lineStarts,
-    required List<List<int>> columnOffsets,
-    required int textLength,
-  }) {
-    final normalized = range.normalized;
-
-    int toOffset(CellOffset position) {
-      final y = position.y.clamp(0, lineCount - 1);
-      final x = position.x.clamp(0, viewWidth);
-      final lineStart = lineStarts[y];
-      final lineOffset = columnOffsets[y][x];
-      return (lineStart + lineOffset).clamp(0, textLength);
-    }
-
-    final start = toOffset(normalized.begin);
-    final end = toOffset(normalized.end);
-    return TextSelection(baseOffset: start, extentOffset: end);
-  }
-
-  void _onNativeOverlayControllerChanged() {
-    if (!mounted || !_isNativeSelectionMode) {
-      return;
-    }
-    final selection = _nativeSelectionController.selection;
-    if (!selection.isValid) {
-      return;
-    }
-    if (hasActiveNativeOverlaySelection(selection)) {
-      _hadNativeOverlaySelection = true;
-      _nativeOverlayCollapseTimer?.cancel();
-      return;
-    }
-    if (!_hadNativeOverlaySelection) {
-      return;
-    }
-    _nativeOverlayCollapseTimer?.cancel();
-    _nativeOverlayCollapseTimer = Timer(const Duration(milliseconds: 250), () {
-      if (!mounted || !_isNativeSelectionMode) {
-        return;
-      }
-      if (!_nativeSelectionController.selection.isCollapsed) {
-        return;
-      }
-      _hadNativeOverlaySelection = false;
-      _handleNativeOverlaySelectionChanged(
-        _nativeSelectionController.selection,
-        null,
-      );
-    });
-  }
-
-  void _handleNativeOverlaySelectionChanged(
-    TextSelection selection,
-    SelectionChangedCause? cause,
-  ) {
-    if (!mounted) {
-      return;
-    }
-
-    switch (resolveNativeSelectionOverlayChange(
-      isMobilePlatform: _isMobilePlatform,
-      isNativeSelectionMode: _isNativeSelectionMode,
-      revealOverlayInTouchScrollMode:
-          _revealsNativeSelectionOverlayInTouchScrollMode,
-      selection: selection,
-    )) {
-      case NativeSelectionOverlayChange.none:
-        return;
-      case NativeSelectionOverlayChange.exitSelectionMode:
-        _dismissNativeSelectionOverlayForEditing();
-        return;
-    }
-  }
-
-  void _dismissNativeSelectionOverlayForEditing() {
-    if (!mounted) {
-      return;
-    }
-
-    if (!_isNativeSelectionMode) {
-      return;
-    }
-
-    if (!_isMobilePlatform) {
-      return;
-    }
-
-    _nativeSelectionFocusNode.unfocus();
-    _nativeSelectionController.clear();
-    _terminalController.clearSelection();
-    _hadNativeOverlaySelection = false;
-    _nativeOverlayCollapseTimer?.cancel();
-    setState(() {
-      _isNativeSelectionMode = false;
-      _revealsNativeSelectionOverlayInTouchScrollMode = false;
-    });
-  }
-
   String? _resolveTerminalLinkTap(CellOffset offset) {
     final externalLink = _resolveTerminalExternalLinkAtOffset(
       offset,
@@ -16304,7 +15786,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forgiving = false,
   }) {
     if (!shouldResolveTerminalTapLinks(
-      showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+      showsNativeSelectionOverlay: _isNativeSelectionMode,
     )) {
       return null;
     }
@@ -17760,11 +17242,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (_isNativeSelectionMode) {
-      if (_isMobilePlatform) {
-        _dismissNativeSelectionOverlayForEditing();
-      } else {
-        _exitNativeSelectionMode();
-      }
+      _exitNativeSelectionMode();
     } else {
       _terminalController.clearSelection();
     }
@@ -17796,6 +17274,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     await _writeLocalClipboardText(text);
     if (clearTerminalSelection) {
       _terminalController.clearSelection();
+      if (_isNativeSelectionMode) _exitNativeSelectionMode();
     }
     if (restoreFocus) {
       _restoreTerminalFocus();
@@ -17811,8 +17290,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   String? _currentTerminalSelectionText() {
     if (_isNativeSelectionMode) {
-      final text = selectedNativeOverlayText(_nativeSelectionController.value);
-      return text.isEmpty ? null : text;
+      return _readSystemSelectionPlainText();
     }
     final selection = _terminalController.selection;
     final terminalControllerText = selection == null
@@ -18818,40 +18296,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         itemLabelSingular: itemLabelSingular,
         itemLabelPlural: itemLabelPlural,
       );
-    } on PlatformException catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picker_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
-    } on FileSystemException catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_file_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
-    } on SftpError catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_remote_upload_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage(
-        'Remote upload failed. Check permissions and try again.',
-      );
     } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_upload_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
+      _handlePickedFileFailure(error, failureContext);
     }
   }
 
@@ -18881,41 +18327,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         itemLabelSingular: itemLabelSingular,
         itemLabelPlural: itemLabelPlural,
       );
-    } on PlatformException catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picker_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
-    } on FileSystemException catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_file_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
-    } on SftpError catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_remote_upload_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage(
-        'Remote upload failed. Check permissions and try again.',
-      );
     } on Object catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'terminal.clipboard',
-        'picked_upload_failed',
-        fields: {'errorType': error.runtimeType},
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed. Try again.');
+      _handlePickedFileFailure(error, failureContext);
     }
+  }
+
+  void _handlePickedFileFailure(Object error, String failureContext) {
+    final failure = pickedFileFailure(error, failureContext);
+    DiagnosticsLogService.instance.warning(
+      'terminal.clipboard',
+      failure.category,
+      fields: {'errorType': error.runtimeType},
+    );
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(failure.message);
   }
 
   Future<T> _withClipboardSftp<T>(

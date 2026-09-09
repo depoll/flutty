@@ -1,6 +1,5 @@
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
@@ -8,6 +7,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/services/port_forward_browser_service.dart';
 import '../../domain/services/port_forward_runtime_service.dart';
 import '../../domain/services/ssh_service.dart';
+import 'port_forward_fields.dart';
 
 /// Result returned after saving a host-scoped port forward.
 class HostPortForwardEditorResult {
@@ -135,114 +135,31 @@ class _HostPortForwardEditorSheetState
                       : null,
                 ),
                 const SizedBox(height: 16),
-                Text(
-                  'Forward Type',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(
-                      value: 'local',
-                      label: Text('Local'),
-                      icon: Icon(Icons.arrow_forward),
-                    ),
-                    ButtonSegment(
-                      value: 'remote',
-                      label: Text('Remote'),
-                      icon: Icon(Icons.arrow_back),
-                    ),
-                  ],
-                  selected: {_forwardType},
-                  onSelectionChanged: _isSaving
+                PortForwardTypeField(
+                  value: _forwardType,
+                  onChanged: _isSaving
                       ? null
-                      : (selected) =>
-                            setState(() => _forwardType = selected.first),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _forwardType == 'local'
-                      ? 'Forward local port to remote host'
-                      : 'Forward remote port to local host',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
+                      : (value) => setState(() => _forwardType = value),
                 ),
                 const SizedBox(height: 20),
-                Text('Local', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _localHostController,
-                        enabled: !_isSaving,
-                        decoration: const InputDecoration(
-                          labelText: 'Host',
-                          hintText: '127.0.0.1',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: _validateRequired,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _localPortController,
-                        enabled: !_isSaving,
-                        decoration: const InputDecoration(
-                          labelText: 'Port',
-                          hintText: '3306',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        validator: _validatePort,
-                      ),
-                    ),
-                  ],
+                PortForwardEndpointFields(
+                  label: 'Local',
+                  hostController: _localHostController,
+                  portController: _localPortController,
+                  hostHint: '127.0.0.1',
+                  portHint: '3306',
+                  compact: true,
+                  enabled: !_isSaving,
                 ),
                 const SizedBox(height: 16),
-                Text('Remote', style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextFormField(
-                        controller: _remoteHostController,
-                        enabled: !_isSaving,
-                        decoration: const InputDecoration(
-                          labelText: 'Host',
-                          hintText: 'localhost',
-                          border: OutlineInputBorder(),
-                        ),
-                        validator: _validateRequired,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: TextFormField(
-                        controller: _remotePortController,
-                        enabled: !_isSaving,
-                        decoration: const InputDecoration(
-                          labelText: 'Port',
-                          hintText: '3306',
-                          border: OutlineInputBorder(),
-                        ),
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [
-                          FilteringTextInputFormatter.digitsOnly,
-                        ],
-                        validator: _validatePort,
-                      ),
-                    ),
-                  ],
+                PortForwardEndpointFields(
+                  label: 'Remote',
+                  hostController: _remoteHostController,
+                  portController: _remotePortController,
+                  hostHint: 'localhost',
+                  portHint: '3306',
+                  compact: true,
+                  enabled: !_isSaving,
                 ),
                 const SizedBox(height: 20),
                 SwitchListTile(
@@ -284,52 +201,6 @@ class _HostPortForwardEditorSheetState
     ),
   );
 
-  String? _validatePort(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'Required';
-    }
-    final port = int.tryParse(value);
-    if (port == null || port < 1 || port > 65535) {
-      return 'Invalid port (1-65535)';
-    }
-    return null;
-  }
-
-  String? _validateRequired(String? value) =>
-      value == null || value.isEmpty ? 'Required' : null;
-
-  Future<bool> _confirmNonLoopbackBind({
-    required String host,
-    required bool isRemote,
-  }) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(
-          isRemote ? 'Expose remote port forward?' : 'Expose port forward?',
-        ),
-        content: Text(
-          isRemote
-              ? 'Binding the remote listener to $host may make this forward '
-                    'reachable from other devices that can access the SSH host.'
-              : 'Binding to $host may make this forward reachable from other '
-                    'devices on your local network.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Allow'),
-          ),
-        ],
-      ),
-    );
-    return confirmed ?? false;
-  }
-
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -339,7 +210,8 @@ class _HostPortForwardEditorSheetState
         ? _remoteHostController.text.trim()
         : _localHostController.text.trim();
     if (!isPortForwardLoopbackHost(bindHost)) {
-      final confirmed = await _confirmNonLoopbackBind(
+      final confirmed = await confirmPortForwardExposure(
+        context: context,
         host: bindHost,
         isRemote: isRemote,
       );

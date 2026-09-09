@@ -1066,6 +1066,99 @@ void main() {
 
       expect(openedRoutes, ['/terminal/1?connectionId=7']);
     });
+    testWidgets(
+      'connection chooser scrolls to old connections on a short viewport',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(400, 500));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final openedRoutes = <String>[];
+        final sessionsNotifier = _MutableActiveSessionsNotifier(
+          initialConnections: [
+            for (var id = 1; id <= 30; id++)
+              _buildActiveConnection(
+                connectionId: id,
+                hostId: 1,
+                state: SshConnectionState.connecting,
+                preview: 'connection $id',
+                previewSnapshot: _buildStyledPreviewSnapshot(),
+              ),
+          ],
+        );
+        final router = GoRouter(
+          initialLocation: '/',
+          routes: [
+            GoRoute(path: '/', builder: (context, state) => const HomeScreen()),
+            GoRoute(
+              path: '/terminal/:hostId',
+              builder: (context, state) => _RecordingTerminalPage(
+                route: state.uri.toString(),
+                openedRoutes: openedRoutes,
+              ),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              transferIntentServiceProvider.overrideWith(
+                (ref) => _TestTransferIntentService(),
+              ),
+              homeScreenShortcutServiceProvider.overrideWith(
+                (ref) => _TestHomeScreenShortcutService(),
+              ),
+              pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+                (ref) => Stream<Set<int>>.value(const <int>{}),
+              ),
+              activeSessionsProvider.overrideWith(() => sessionsNotifier),
+              allHostsProvider.overrideWith(
+                (ref) => Stream.value([
+                  _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+                ]),
+              ),
+            ],
+            child: MediaQuery(
+              data: const MediaQueryData(size: Size(400, 800)),
+              child: MaterialApp.router(routerConfig: router),
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        await tester.ensureVisible(find.text('Alpha'));
+        await tester.tap(find.text('Alpha'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('30 active connections'), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        final list = find
+            .descendant(
+              of: find.byType(BottomSheet),
+              matching: find.byType(Scrollable),
+            )
+            .first;
+        await tester.scrollUntilVisible(
+          find.text('New connection'),
+          250,
+          scrollable: list,
+        );
+        expect(find.text('New connection').hitTestable(), findsOneWidget);
+        expect(tester.takeException(), isNull);
+        final oldest = find.descendant(
+          of: find.byType(BottomSheet),
+          matching: find.text('Connection #1'),
+        );
+        await tester.ensureVisible(oldest);
+        await tester.tap(oldest);
+        await tester.pumpAndSettle();
+        expect(openedRoutes, ['/terminal/1?connectionId=1']);
+      },
+    );
   });
 
   testWidgets('context menu triggers expose semantics labels', (tester) async {

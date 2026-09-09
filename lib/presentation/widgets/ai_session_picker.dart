@@ -41,9 +41,6 @@ class AiSessionProviderEntry {
   /// Whether the provider currently has at least one discovered session.
   bool get hasSessions => hasSessionsOverride ?? sessions.isNotEmpty;
 
-  /// Provider rows stay tappable so users can load or retry on demand.
-  bool get isSelectable => true;
-
   /// Full status text for roomy list tiles.
   String get statusLabel {
     if (hasFailure) return 'Could not load recent sessions';
@@ -63,34 +60,98 @@ class AiSessionProviderEntry {
   }
 }
 
-/// Builds stable provider rows from the current discovery snapshot.
-List<AiSessionProviderEntry> buildAiSessionProviderEntries({
-  required Iterable<String> orderedTools,
-  required Map<String, List<ToolSessionInfo>> groupedSessions,
-  required bool isLoading,
-  Iterable<String> attemptedTools = const <String>[],
-  Iterable<String> failedTools = const <String>[],
-}) {
-  final attemptedToolSet = attemptedTools.toSet();
-  final failedToolSet = failedTools.toSet();
+/// A discovered-session provider row shared by the mux pickers.
+class AiSessionProviderTile extends StatelessWidget {
+  /// Creates a provider tile with the surrounding picker's spacing.
+  const AiSessionProviderTile({
+    required this.provider,
+    required this.onTap,
+    required this.visualDensity,
+    required this.contentPadding,
+    required this.minLeadingWidth,
+    required this.iconColor,
+    this.iconSize = 20,
+    super.key,
+  });
 
-  return orderedTools
-      .map(
-        (toolName) => AiSessionProviderEntry(
-          toolName: toolName,
-          sessions: groupedSessions[toolName] ?? const <ToolSessionInfo>[],
-          wasAttempted:
-              attemptedToolSet.contains(toolName) ||
-              failedToolSet.contains(toolName),
-          hasFailure: failedToolSet.contains(toolName),
-          isLoading:
-              isLoading &&
-              !attemptedToolSet.contains(toolName) &&
-              !failedToolSet.contains(toolName) &&
-              !(groupedSessions[toolName]?.isNotEmpty ?? false),
+  /// Current provider status.
+  final AiSessionProviderEntry provider;
+
+  /// Opens or retries discovery for this provider.
+  final VoidCallback onTap;
+
+  /// Tile density.
+  final VisualDensity visualDensity;
+
+  /// Padding matching the surrounding rows.
+  final EdgeInsetsGeometry contentPadding;
+
+  /// Space reserved for the provider icon.
+  final double minLeadingWidth;
+
+  /// Provider icon color.
+  final Color iconColor;
+
+  /// Provider icon size.
+  final double iconSize;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListTile(
+      dense: true,
+      visualDensity: visualDensity,
+      minVerticalPadding: 2,
+      contentPadding: contentPadding,
+      horizontalTitleGap: 12,
+      minLeadingWidth: minLeadingWidth,
+      leading: AgentToolIcon(
+        toolName: provider.toolName,
+        size: iconSize,
+        color: iconColor,
+      ),
+      title: Text(
+        provider.toolName,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: provider.hasFailure
+              ? theme.colorScheme.error
+              : theme.colorScheme.onSurface,
         ),
-      )
-      .toList(growable: false);
+      ),
+      subtitle: Text(
+        provider.statusLabel,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: provider.hasFailure
+              ? theme.colorScheme.error
+              : theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+      trailing: provider.isLoading && !provider.hasSessions
+          ? const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+            )
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (provider.isLoading) ...[
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                Icon(
+                  Icons.chevron_right,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+      onTap: onTap,
+    );
+  }
 }
 
 /// Loader callback used by [AiSessionPickerDialog].

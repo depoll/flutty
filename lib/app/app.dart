@@ -128,12 +128,38 @@ class _BackgroundLifecycleBridgeState
   Set<int> _latestPinnedHomeScreenShortcutHostIds = const <int>{};
   bool _hasLoadedHomeScreenShortcutHosts = false;
   bool _hasLoadedPinnedHomeScreenShortcutHostIds = false;
-  TmuxAlertNotificationPayload? _pendingTmuxAlertNavigation;
-  bool _isTmuxAlertNavigationQueued = false;
-  TerminalNotificationPayload? _pendingTerminalNavigation;
-  bool _isTerminalNavigationQueued = false;
-  AcpNotificationPayload? _pendingAcpNavigation;
-  bool _isAcpNavigationQueued = false;
+  late final _tmuxAlertNavigation =
+      NotificationNavigationScheduler<TmuxAlertNotificationPayload>(
+        canNavigate: () =>
+            mounted &&
+            _canOpenTmuxAlertNotification(ref.read(authStateProvider)),
+        open: (payload) => openTmuxAlertNotificationStack(
+          router: ref.read(routerProvider),
+          payload: payload,
+          notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
+  late final _terminalNavigation =
+      NotificationNavigationScheduler<TerminalNotificationPayload>(
+        canNavigate: () =>
+            mounted &&
+            _canOpenTmuxAlertNotification(ref.read(authStateProvider)),
+        open: (payload) => openTerminalNotificationStack(
+          router: ref.read(routerProvider),
+          payload: payload,
+          notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
+  late final _acpNavigation =
+      NotificationNavigationScheduler<AcpNotificationPayload>(
+        canNavigate: () =>
+            mounted &&
+            _canOpenTmuxAlertNotification(ref.read(authStateProvider)),
+        open: (payload) => openAcpNotificationStack(
+          router: ref.read(routerProvider),
+          payload: payload,
+        ),
+      );
 
   @override
   void initState() {
@@ -200,9 +226,9 @@ class _BackgroundLifecycleBridgeState
       next,
     ) {
       if (_canOpenTmuxAlertNotification(next)) {
-        _queuePendingTmuxAlertNavigation();
-        _queuePendingTerminalNavigation();
-        _queuePendingAcpNavigation();
+        _tmuxAlertNavigation.flush();
+        _terminalNavigation.flush();
+        _acpNavigation.flush();
       }
     });
   }
@@ -230,36 +256,7 @@ class _BackgroundLifecycleBridgeState
       authState != AuthState.unknown && authState != AuthState.locked;
 
   void _handleTmuxAlertNotification(TmuxAlertNotificationPayload payload) {
-    _pendingTmuxAlertNavigation = payload;
-    _queuePendingTmuxAlertNavigation();
-  }
-
-  void _queuePendingTmuxAlertNavigation() {
-    if (_isTmuxAlertNavigationQueued ||
-        _pendingTmuxAlertNavigation == null ||
-        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-      return;
-    }
-
-    _isTmuxAlertNavigationQueued = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _isTmuxAlertNavigationQueued = false;
-      if (!mounted ||
-          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-        return;
-      }
-      final payload = _pendingTmuxAlertNavigation;
-      if (payload == null) {
-        return;
-      }
-      _pendingTmuxAlertNavigation = null;
-      openTmuxAlertNotificationStack(
-        router: ref.read(routerProvider),
-        payload: payload,
-        notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
-      );
-    });
-    WidgetsBinding.instance.ensureVisualUpdate();
+    _tmuxAlertNavigation.add(payload);
   }
 
   void _handleTerminalNotification(TerminalNotificationPayload payload) {
@@ -272,69 +269,12 @@ class _BackgroundLifecycleBridgeState
       // succeeds even when best-effort protocol reports cannot be sent.
     }
     if (payload.focusOnActivation) {
-      _pendingTerminalNavigation = payload;
-      _queuePendingTerminalNavigation();
+      _terminalNavigation.add(payload);
     }
-  }
-
-  void _queuePendingTerminalNavigation() {
-    if (_isTerminalNavigationQueued ||
-        _pendingTerminalNavigation == null ||
-        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-      return;
-    }
-
-    _isTerminalNavigationQueued = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _isTerminalNavigationQueued = false;
-      if (!mounted ||
-          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-        return;
-      }
-      final payload = _pendingTerminalNavigation;
-      if (payload == null) {
-        return;
-      }
-      _pendingTerminalNavigation = null;
-      openTerminalNotificationStack(
-        router: ref.read(routerProvider),
-        payload: payload,
-        notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
-      );
-    });
-    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _handleAcpNotification(AcpNotificationPayload payload) {
-    _pendingAcpNavigation = payload;
-    _queuePendingAcpNavigation();
-  }
-
-  void _queuePendingAcpNavigation() {
-    if (_isAcpNavigationQueued ||
-        _pendingAcpNavigation == null ||
-        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-      return;
-    }
-
-    _isAcpNavigationQueued = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _isAcpNavigationQueued = false;
-      if (!mounted ||
-          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
-        return;
-      }
-      final payload = _pendingAcpNavigation;
-      if (payload == null) {
-        return;
-      }
-      _pendingAcpNavigation = null;
-      openAcpNotificationStack(
-        router: ref.read(routerProvider),
-        payload: payload,
-      );
-    });
-    WidgetsBinding.instance.ensureVisualUpdate();
+    _acpNavigation.add(payload);
   }
 
   void _listenForHomeScreenShortcutChanges() {

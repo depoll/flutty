@@ -1,7 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:dartssh2/dartssh2.dart';
-import 'package:drift/drift.dart';
+import 'package:drift/drift.dart' hide isNull;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -88,6 +88,44 @@ Host _host() => Host(
 );
 
 void main() {
+  for (final fails in [false, true]) {
+    testWidgets(
+      'edit load ${fails ? 'failure' : 'missing record'} leaves loading',
+      (tester) async {
+        final hosts = _MockHostRepository();
+        final forwards = _MockPortForwardRepository();
+        when(hosts.getAll).thenAnswer((_) async => [_host()]);
+        when(() => forwards.getById(999)).thenAnswer((_) async {
+          if (fails) throw Exception('read failed');
+          return null;
+        });
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              hostRepositoryProvider.overrideWithValue(hosts),
+              portForwardRepositoryProvider.overrideWithValue(forwards),
+            ],
+            child: const MaterialApp(
+              home: PortForwardEditScreen(portForwardId: 999),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(CircularProgressIndicator), findsNothing);
+        expect(
+          find.text(
+            fails
+                ? 'Could not load port forward. Try again.'
+                : 'Port forward not found.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Save Changes'), findsNothing);
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
   setUpAll(() {
     registerFallbackValue(
       PortForwardsCompanion.insert(

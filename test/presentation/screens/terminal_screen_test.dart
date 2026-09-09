@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -767,88 +768,6 @@ void main() {
   );
 
   group('terminal native selection helpers', () {
-    test('starts selection on separator characters', () {
-      final terminal = Terminal(maxLines: 100)..write('foo/bar');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(3, 0),
-      );
-
-      expect(range, isNotNull);
-      expect(range!.begin, const CellOffset(3, 0));
-      expect(range.end, const CellOffset(4, 0));
-    });
-
-    test('starts selection when a touch lands near a word', () {
-      final terminal = Terminal(maxLines: 100)..write('alpha  beta');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(6, 0),
-      );
-
-      expect(range, isNotNull);
-      expect(range!.begin, const CellOffset(7, 0));
-      expect(range.end, const CellOffset(11, 0));
-    });
-
-    test('ignores trailing blanks that are not near selectable text', () {
-      final terminal = Terminal(maxLines: 100)..write('alpha');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(20, 0),
-      );
-
-      expect(range, isNull);
-    });
-
-    test('adds paste action to the native overlay context menu', () {
-      var didPaste = false;
-
-      final items = buildNativeSelectionContextMenuButtonItems(
-        defaultItems: const [
-          ContextMenuButtonItem(
-            type: ContextMenuButtonType.copy,
-            onPressed: null,
-          ),
-        ],
-        onPaste: () => didPaste = true,
-      );
-
-      final pasteItem = items.singleWhere(
-        (item) => item.type == ContextMenuButtonType.paste,
-      );
-      pasteItem.onPressed!();
-
-      expect(didPaste, isTrue);
-    });
-
-    test(
-      'preserves default copy action in the native overlay context menu',
-      () {
-        var didCopy = false;
-
-        final items = buildNativeSelectionContextMenuButtonItems(
-          defaultItems: [
-            ContextMenuButtonItem(
-              type: ContextMenuButtonType.copy,
-              onPressed: () => didCopy = true,
-            ),
-          ],
-          onPaste: () {},
-        );
-
-        final copyItem = items.singleWhere(
-          (item) => item.type == ContextMenuButtonType.copy,
-        );
-        copyItem.onPressed!();
-
-        expect(didCopy, isTrue);
-      },
-    );
-
     test('runs terminal selection menu action before hiding toolbar', () {
       String? selectedText = 'alpha';
       String? copiedText;
@@ -2866,6 +2785,82 @@ void main() {
         expect(find.text('Sensitive Keyboard'), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'desktop Native Selection selects and copies rendered text',
+      (tester) async {
+        String? copied;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied = (call.arguments as Map)['text'] as String?;
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        session.terminal!.write('alpha beta\r\n');
+        await pumpScreen(tester);
+        await openTerminalOverflowMenu(tester);
+        await tester.tap(terminalMenuItemButton('Native Selection'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .useSystemSelection,
+          isTrue,
+        );
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        final start = render.localToGlobal(
+          render.getOffset(const CellOffset(0, 0)) +
+              Offset(1, render.cellSize.height / 2),
+        );
+        final end = render.localToGlobal(
+          render.getOffset(const CellOffset(5, 0)) +
+              Offset(1, render.cellSize.height / 2),
+        );
+        final mouse = await tester.startGesture(
+          start,
+          kind: PointerDeviceKind.mouse,
+        );
+        await mouse.moveTo(end);
+        await mouse.up();
+        await tester.pump();
+        expect(render.getSelectedContent()?.plainText, 'alpha');
+        final contextClick = await tester.startGesture(
+          start,
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await contextClick.up();
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Copy').last);
+        await tester.pumpAndSettle();
+        expect(copied, 'alpha');
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .useSystemSelection,
+          isFalse,
+        );
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .focusNode!
+              .hasFocus,
+          isTrue,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );
 
     testWidgets(

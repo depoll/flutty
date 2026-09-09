@@ -22,6 +22,7 @@ import '../../domain/services/ssh_service.dart';
 import '../../domain/services/telemetry_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/font_family_picker.dart';
 import '../widgets/message_of_the_day.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
@@ -760,7 +761,7 @@ class _TerminalSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.font_download_outlined),
           title: const Text('Font family'),
-          subtitle: Text(_fontFamilyLabel(fontFamily)),
+          subtitle: Text(fontFamilyLabel(fontFamily)),
           onTap: () => _showFontFamilyDialog(context, ref, fontFamily),
         ),
         ListTile(
@@ -1050,26 +1051,6 @@ class _TerminalSection extends ConsumerWidget {
     }
   }
 
-  String _fontFamilyLabel(String family) => switch (family) {
-    'monospace' => 'System Monospace',
-    'JetBrains Mono' => 'JetBrains Mono',
-    'Fira Code' => 'Fira Code',
-    'Source Code Pro' => 'Source Code Pro',
-    'Ubuntu Mono' => 'Ubuntu Mono',
-    'Roboto Mono' => 'Roboto Mono',
-    'IBM Plex Mono' => 'IBM Plex Mono',
-    'Inconsolata' => 'Inconsolata',
-    'Anonymous Pro' => 'Anonymous Pro',
-    'Cousine' => 'Cousine',
-    'PT Mono' => 'PT Mono',
-    'Space Mono' => 'Space Mono',
-    'VT323' => 'VT323 (Retro)',
-    'Share Tech Mono' => 'Share Tech Mono',
-    'Overpass Mono' => 'Overpass Mono',
-    'Oxygen Mono' => 'Oxygen Mono',
-    _ => family,
-  };
-
   /// Gets a TextStyle for the given font family using Google Fonts.
   TextStyle _getFontStyle(String family, {double fontSize = 16}) =>
       switch (family) {
@@ -1171,117 +1152,22 @@ class _TerminalSection extends ConsumerWidget {
     );
   }
 
-  void _showFontFamilyDialog(
+  Future<void> _showFontFamilyDialog(
     BuildContext context,
     WidgetRef ref,
     String current,
-  ) {
-    final options = [
-      'monospace',
-      'JetBrains Mono',
-      'Fira Code',
-      'Source Code Pro',
-      'Ubuntu Mono',
-      'Roboto Mono',
-      'IBM Plex Mono',
-      'Inconsolata',
-      'Anonymous Pro',
-      'Cousine',
-      'PT Mono',
-      'Space Mono',
-      'VT323',
-      'Share Tech Mono',
-      'Overpass Mono',
-      'Oxygen Mono',
-    ];
-    const previewText = 'AaBbCc 0123 {}[]';
-
-    showDialog<void>(
+  ) async {
+    final selected = await showFontPickerDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Font family'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: MediaQuery.of(context).size.height * 0.6,
-          child: Column(
-            children: [
-              // Current selection preview
-              Container(
-                padding: const EdgeInsets.all(12),
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.primaryContainer.withAlpha(50),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Theme.of(context).colorScheme.primary.withAlpha(100),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.check_circle,
-                      color: Theme.of(context).colorScheme.primary,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Currently Selected',
-                            style: Theme.of(context).textTheme.labelSmall
-                                ?.copyWith(
-                                  color: Theme.of(context).colorScheme.primary,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                          Text(
-                            _fontFamilyLabel(current),
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          Text(previewText, style: _getFontStyle(current)),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Font list
-              Expanded(
-                child: RadioGroup<String>(
-                  groupValue: current,
-                  onChanged: (value) {
-                    if (value != null) {
-                      ref
-                          .read(fontFamilyNotifierProvider.notifier)
-                          .setFontFamily(value);
-                      Navigator.pop(context);
-                    }
-                  },
-                  child: ListView.builder(
-                    itemCount: options.length,
-                    itemBuilder: (context, index) {
-                      final family = options[index];
-                      return RadioListTile<String>(
-                        title: Text(_fontFamilyLabel(family)),
-                        subtitle: Text(
-                          previewText,
-                          style: _getFontStyle(family),
-                        ),
-                        value: family,
-                      );
-                    },
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      currentFontFamily: current,
+      title: 'Font family',
+      previewFontSize: 16,
     );
+    if (selected != null && context.mounted) {
+      await ref
+          .read(fontFamilyNotifierProvider.notifier)
+          .setFontFamily(selected);
+    }
   }
 
   void _showCursorStyleDialog(

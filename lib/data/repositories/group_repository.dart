@@ -16,22 +16,9 @@ class GroupRepository {
   /// Watch all groups.
   Stream<List<Group>> watchAll() => _orderedGroupsQuery().watch();
 
-  /// Get root groups (no parent).
-  Future<List<Group>> getRootGroups() =>
-      (_orderedGroupsQuery()..where((g) => g.parentId.isNull())).get();
-
-  /// Watch root groups.
-  Stream<List<Group>> watchRootGroups() =>
-      (_orderedGroupsQuery()..where((g) => g.parentId.isNull())).watch();
-
   /// Get child groups of a parent.
   Future<List<Group>> getChildren(int parentId) =>
       (_orderedGroupsQuery()..where((g) => g.parentId.equals(parentId))).get();
-
-  /// Watch child groups.
-  Stream<List<Group>> watchChildren(int parentId) =>
-      (_orderedGroupsQuery()..where((g) => g.parentId.equals(parentId)))
-          .watch();
 
   /// Get a group by ID.
   Future<Group?> getById(int id) =>

@@ -533,6 +533,15 @@ void main() {
 
       expect(find.text('Font family'), findsOneWidget);
       expect(find.text('System Monospace'), findsOneWidget);
+      await tester.tap(find.text('Font family'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('JetBrains Mono'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(SettingsScreen)),
+      );
+      expect(container.read(fontFamilyNotifierProvider), 'JetBrains Mono');
     });
 
     testWidgets('displays cursor style option', (tester) async {

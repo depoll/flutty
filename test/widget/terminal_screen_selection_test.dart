@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dartssh2/dartssh2.dart' show SftpError;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,6 +17,64 @@ import 'package:xterm/xterm.dart';
 class _FakeImagePickerPlatform extends ImagePickerPlatform {}
 
 void main() {
+  test('picked-file failures preserve category and safe messages', () {
+    for (final (error, category) in <(Object, String)>[
+      (PlatformException(code: 'denied'), 'picker_failed'),
+      (const FileSystemException('private path'), 'picked_file_failed'),
+      (SftpError('private remote path'), 'picked_remote_upload_failed'),
+      (StateError('private details'), 'picked_upload_failed'),
+    ]) {
+      final failure = pickedFileFailure(error, 'File picker');
+      expect(failure.category, category);
+      expect(
+        failure.message,
+        error is SftpError
+            ? 'Remote upload failed. Check permissions and try again.'
+            : 'File picker failed. Try again.',
+      );
+    }
+  });
+
+  group('tmux window snapshot matching', () {
+    const first = TmuxWindow(
+      index: 0,
+      id: '@1',
+      name: 'first',
+      isActive: true,
+      panePid: 10,
+    );
+    const second = TmuxWindow(
+      index: 1,
+      id: '@2',
+      name: 'second',
+      isActive: false,
+    );
+    test('reordered snapshots keep identity', () {
+      expect(
+        shouldRefreshTmuxThemeAfterWindowChange(
+          [first, second],
+          [second, first],
+        ),
+        isFalse,
+      );
+    });
+    test('missing IDs match by index and present IDs do not fall back', () {
+      const noId = TmuxWindow(index: 0, name: 'first', isActive: true);
+      expect(shouldRefreshTmuxThemeAfterWindowChange([noId], [noId]), isFalse);
+      expect(shouldRefreshTmuxThemeAfterWindowChange([noId], [first]), isTrue);
+      expect(shouldRefreshTmuxThemeAfterWindowChange([first], [noId]), isTrue);
+    });
+    test('pane identity changes trigger refresh', () {
+      expect(
+        shouldRefreshTmuxThemeAfterWindowChange(
+          [first],
+          [first.copyWith(panePid: 11)],
+        ),
+        isTrue,
+      );
+    });
+  });
+
   group('trimTerminalSelectionText', () {
     test('trims trailing padding on each line only', () {
       expect(
@@ -2267,32 +2326,6 @@ void main() {
     });
   });
 
-  group('selectedNativeOverlayText', () {
-    test('returns the selected overlay substring', () {
-      expect(
-        selectedNativeOverlayText(
-          const TextEditingValue(
-            text: 'copilot cli',
-            selection: TextSelection(baseOffset: 0, extentOffset: 7),
-          ),
-        ),
-        'copilot',
-      );
-    });
-
-    test('returns empty text for a collapsed overlay selection', () {
-      expect(
-        selectedNativeOverlayText(
-          const TextEditingValue(
-            text: 'copilot cli',
-            selection: TextSelection.collapsed(offset: 7),
-          ),
-        ),
-        isEmpty,
-      );
-    });
-  });
-
   group('applyTerminalCursorInsertion', () {
     test('appends inserted text at the current cursor offset', () {
       final nextValue = applyTerminalCursorInsertion(
@@ -2349,119 +2382,6 @@ void main() {
           preserveTrailingPadding: true,
         ),
         8,
-      );
-    });
-  });
-
-  group('hasActiveNativeOverlaySelection', () {
-    test('recognizes expanded native overlay selections as active', () {
-      expect(
-        hasActiveNativeOverlaySelection(
-          const TextSelection(baseOffset: 2, extentOffset: 8),
-        ),
-        isTrue,
-      );
-    });
-
-    test('treats collapsed native overlay selections as inactive', () {
-      expect(
-        hasActiveNativeOverlaySelection(
-          const TextSelection.collapsed(offset: 8),
-        ),
-        isFalse,
-      );
-    });
-  });
-
-  group('shouldShowNativeSelectionOverlay', () {
-    test('keeps overlay hidden until native selection mode is entered', () {
-      expect(
-        shouldShowNativeSelectionOverlay(
-          isNativeSelectionMode: false,
-          routesTouchScrollToTerminal: false,
-          revealOverlayInTouchScrollMode: false,
-        ),
-        isFalse,
-      );
-    });
-
-    test(
-      'shows overlay when touch scrolling is not routed to the terminal',
-      () {
-        expect(
-          shouldShowNativeSelectionOverlay(
-            isNativeSelectionMode: true,
-            routesTouchScrollToTerminal: false,
-            revealOverlayInTouchScrollMode: false,
-          ),
-          isTrue,
-        );
-      },
-    );
-
-    test(
-      'shows overlay during tmux touch scrolling after selection begins',
-      () {
-        expect(
-          shouldShowNativeSelectionOverlay(
-            isNativeSelectionMode: true,
-            routesTouchScrollToTerminal: true,
-            revealOverlayInTouchScrollMode: true,
-          ),
-          isTrue,
-        );
-      },
-    );
-
-    test(
-      'keeps overlay visible in native mode during tmux touch scrolling',
-      () {
-        expect(
-          shouldShowNativeSelectionOverlay(
-            isNativeSelectionMode: true,
-            routesTouchScrollToTerminal: true,
-            revealOverlayInTouchScrollMode: false,
-          ),
-          isTrue,
-        );
-      },
-    );
-  });
-
-  group('resolveNativeSelectionOverlayChange', () {
-    test('exits mobile selection mode when selection collapses', () {
-      expect(
-        resolveNativeSelectionOverlayChange(
-          isMobilePlatform: true,
-          isNativeSelectionMode: true,
-          revealOverlayInTouchScrollMode: false,
-          selection: const TextSelection.collapsed(offset: 3),
-        ),
-        NativeSelectionOverlayChange.exitSelectionMode,
-      );
-    });
-
-    test('exits mobile selection mode when a tmux selection collapses', () {
-      expect(
-        resolveNativeSelectionOverlayChange(
-          isMobilePlatform: true,
-          isNativeSelectionMode: true,
-          revealOverlayInTouchScrollMode: true,
-          selection: const TextSelection.collapsed(offset: 3),
-        ),
-        NativeSelectionOverlayChange.exitSelectionMode,
-      );
-    });
-
-    test('keeps overlay state when selection remains expanded', () {
-      expect(
-        resolveNativeSelectionOverlayChange(
-          isMobilePlatform: true,
-          isNativeSelectionMode: true,
-          revealOverlayInTouchScrollMode: false,
-          selection: const TextSelection(baseOffset: 1, extentOffset: 4),
-        ),
-        NativeSelectionOverlayChange.none,
       );
     });
   });

@@ -120,6 +120,47 @@ Widget _wrap(
 }
 
 void main() {
+  testWidgets('unrelated session updates do not rebuild the conversation', (
+    tester,
+  ) async {
+    final current = fakeAcpSession(
+      timeline: fakeAcpTimeline('Current conversation'),
+    );
+    final other = fakeAcpSession(key: fakeAcpKey(acpSessionId: 'other'));
+    final manager = FakeAcpSessionManager(sessions: [current, other]);
+    await tester.pumpWidget(_wrap(manager));
+    await tester.pumpAndSettle();
+    final thread = tester.widget<AcpMessageThread>(
+      find.byType(AcpMessageThread),
+    );
+    manager.emit(
+      AcpSessionManagerState(
+        sessions: [
+          current,
+          other.copyWith(timeline: fakeAcpTimeline('Unrelated update')),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      identical(
+        tester.widget<AcpMessageThread>(find.byType(AcpMessageThread)),
+        thread,
+      ),
+      isTrue,
+    );
+    manager.emit(
+      AcpSessionManagerState(
+        sessions: [
+          current.copyWith(timeline: fakeAcpTimeline('Current updated')),
+          other,
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Current updated'), findsOneWidget);
+  });
+
   testWidgets('renders the live timeline and composer on mobile', (
     tester,
   ) async {

@@ -1683,54 +1683,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   int _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
     List<String> previousGraphemes,
     List<String> currentGraphemes, {
-    int? maxLength,
+    required int maxLength,
   }) {
     if (previousGraphemes.isEmpty || currentGraphemes.isEmpty) {
       return 0;
     }
 
-    final cappedMaxLength = maxLength == null || maxLength < 1
-        ? null
-        : maxLength;
-    if (cappedMaxLength != null && cappedMaxLength <= 2) {
-      return _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
-        previousGraphemes,
-        currentGraphemes,
-        maxLength: cappedMaxLength,
-      );
-    }
-    final normalizedCurrentGraphemes = currentGraphemes
-        .map((grapheme) => grapheme.toLowerCase())
-        .toList(growable: false);
-    var previousRow = List<int>.filled(currentGraphemes.length + 1, 0);
-    for (final previousGrapheme in previousGraphemes) {
-      final currentRow = List<int>.filled(currentGraphemes.length + 1, 0);
-      final normalizedPreviousGrapheme = previousGrapheme.toLowerCase();
-      for (var index = 0; index < currentGraphemes.length; index++) {
-        final nextLength =
-            normalizedPreviousGrapheme == normalizedCurrentGraphemes[index]
-            ? previousRow[index] + 1
-            : (previousRow[index + 1] > currentRow[index]
-                  ? previousRow[index + 1]
-                  : currentRow[index]);
-        currentRow[index +
-            1] = cappedMaxLength != null && nextLength > cappedMaxLength
-            ? cappedMaxLength
-            : nextLength;
-      }
-      previousRow = currentRow;
-      if (cappedMaxLength != null && previousRow.last >= cappedMaxLength) {
-        return cappedMaxLength;
-      }
-    }
-    return previousRow.last;
-  }
-
-  int _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
-    List<String> previousGraphemes,
-    List<String> currentGraphemes, {
-    required int maxLength,
-  }) {
     final currentPositionsByGrapheme = <String, List<int>>{};
     for (var index = 0; index < currentGraphemes.length; index++) {
       final normalizedCurrentGrapheme = currentGraphemes[index].toLowerCase();
@@ -1753,12 +1711,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       hasLengthOneMatch = true;
-      if (shortestLengthOneEndIndex != null) {
-        for (final position in positions) {
-          if (position > shortestLengthOneEndIndex) {
-            return 2;
-          }
-        }
+      if (shortestLengthOneEndIndex != null &&
+          positions.last > shortestLengthOneEndIndex) {
+        return 2;
       }
 
       final firstPosition = positions.first;
