@@ -103,9 +103,6 @@ class KeyService {
     );
   }
 
-  /// Get a key by ID.
-  Future<SshKey?> getById(int id) => _keyRepository.getById(id);
-
   /// Reads the algorithm name embedded at the start of an OpenSSH public-key
   /// blob (an SSH length-prefixed string), e.g. 'ssh-ed25519' or 'ssh-rsa'.
   String _readPublicKeyAlgorithm(List<int> publicKeyBlob) {

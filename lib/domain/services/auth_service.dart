@@ -70,10 +70,6 @@ class BiometricAvailability {
   /// Whether biometric hardware exists but the user must enroll first.
   bool get needsBiometricEnrollment =>
       isBiometricHardwareSupported && enrolledBiometrics.isEmpty;
-
-  /// Whether only non-biometric device credentials are supported.
-  bool get supportsDeviceCredentialOnly =>
-      isDeviceAuthSupported && !isBiometricHardwareSupported;
 }
 
 /// Service for handling app authentication (PIN/biometric).

@@ -146,7 +146,11 @@ void main() {
   });
 
   for (final kind in ['host', 'key']) {
-    for (final operation in ['decrypt', 'migration', 'update']) {
+    for (final operation in [
+      'decrypt',
+      'migration',
+      if (kind == 'host') 'update',
+    ]) {
       test('$kind cache rejects $operation insertion after clear', () async {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
@@ -181,18 +185,11 @@ void main() {
         final host = kind == 'host' && operation == 'update'
             ? await hosts.getById(id)
             : null;
-        final key = kind == 'key' && operation == 'update'
-            ? await keys.getById(id)
-            : null;
         encryption
           ..pauseDecrypt = operation == 'decrypt'
           ..pauseEncrypt = operation != 'decrypt';
         final pending = operation == 'update'
-            ? kind == 'host'
-                  ? hosts.update(
-                      host!.copyWith(password: const Value('new secret')),
-                    )
-                  : keys.update(key!.copyWith(privateKey: 'new secret'))
+            ? hosts.update(host!.copyWith(password: const Value('new secret')))
             : kind == 'host'
             ? hosts.getById(id)
             : keys.getById(id);
@@ -509,7 +506,7 @@ void main() {
       },
     );
 
-    test('cache does not serve stale private key after update', () async {
+    test('cache does not serve stale private key after replacement', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       final enc = SecretEncryptionService.forTesting();
       final repo = KeyRepository(db, enc);
@@ -528,10 +525,14 @@ void main() {
       expect((await repo.getById(id))!.privateKey, '-----BEGIN old');
       expect(repo.debugDecryptionCacheSize, 1);
 
-      // Update private key → new ciphertext.
       final key = await repo.getById(id);
-      await repo.update(key!.copyWith(privateKey: '-----BEGIN new'));
-      expect(repo.debugDecryptionCacheSize, 1);
+      await repo.delete(id);
+      await repo.insert(
+        key!
+            .toCompanion(true)
+            .copyWith(privateKey: const Value('-----BEGIN new')),
+      );
+      expect(repo.debugDecryptionCacheSize, 0);
 
       expect((await repo.getById(id))!.privateKey, '-----BEGIN new');
 

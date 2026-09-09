@@ -782,7 +782,7 @@ void main() {
       });
     });
 
-    group('approveCurrentCommand', () {
+    group('imported command approval', () {
       test('approves the current command, making isCommandApproved true', () {
         final definition = AcpCustomProviderDefinition.create(
           id: 'my-agent',
@@ -800,9 +800,14 @@ void main() {
         );
         expect(changed.isCommandApproved, isFalse);
 
-        final approved = changed.approveCurrentCommand(
-          now: DateTime.utc(2026, 3),
-        );
+        final approved = AcpCustomProviderDefinition.tryFromJson({
+          ...changed.toJson(),
+          'approval': AcpCommandApproval.approve(
+            changed.launchCommand,
+            now: DateTime.utc(2026, 3),
+          ).toJson(),
+          'updatedAt': DateTime.utc(2026, 3).toIso8601String(),
+        })!;
         expect(approved.isCommandApproved, isTrue);
         expect(
           approved.approval.commandFingerprint,
@@ -820,9 +825,14 @@ void main() {
           launchCommand: command,
           now: DateTime.utc(2026),
         );
-        final reApproved = definition.approveCurrentCommand(
-          now: DateTime.utc(2026, 2),
-        );
+        final reApproved = AcpCustomProviderDefinition.tryFromJson({
+          ...definition.toJson(),
+          'approval': AcpCommandApproval.approve(
+            definition.launchCommand,
+            now: DateTime.utc(2026, 2),
+          ).toJson(),
+          'updatedAt': DateTime.utc(2026, 2).toIso8601String(),
+        })!;
         expect(reApproved.isCommandApproved, isTrue);
         expect(
           reApproved.approval.commandFingerprint,

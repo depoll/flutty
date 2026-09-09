@@ -1,28 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:highlight/highlight.dart' show Node, highlight;
+import 'package:highlight/highlight.dart' show highlight;
 
 import '../../app/theme.dart';
 import 'acp_chat_typography.dart';
+import 'highlight_nodes.dart';
 import 'syntax_highlight_theme.dart';
-
-/// Converts highlight.js [Node]s into styled [TextSpan]s using a highlight.js
-/// class-name → [TextStyle] [theme] map.
-List<TextSpan> _convertNodes(List<Node> nodes, Map<String, TextStyle> theme) {
-  final spans = <TextSpan>[];
-  for (final node in nodes) {
-    final className = node.className;
-    final style = className != null ? theme[className] : null;
-    if (node.value != null) {
-      spans.add(TextSpan(text: node.value, style: style));
-    } else if (node.children != null) {
-      spans.add(
-        TextSpan(style: style, children: _convertNodes(node.children!, theme)),
-      );
-    }
-  }
-  return spans;
-}
 
 /// Builds syntax-highlighted [TextSpan]s for a block of [code].
 ///
@@ -44,7 +27,7 @@ List<TextSpan> buildAcpHighlightSpans(
     if (nodes == null || nodes.isEmpty) {
       return [TextSpan(text: code)];
     }
-    return _convertNodes(nodes, theme);
+    return convertHighlightNodes(nodes, theme);
   } on Object {
     return [TextSpan(text: code)];
   }

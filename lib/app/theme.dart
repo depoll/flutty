@@ -49,9 +49,6 @@ abstract final class FluttyTheme {
   /// Large border radius.
   static const double radiusLg = 16;
 
-  /// Standard icon size for empty states.
-  static const double emptyStateIconSize = 48;
-
   /// Light theme.
   static ThemeData get light => _buildTheme(Brightness.light);
 
@@ -646,16 +643,4 @@ abstract final class FluttyTheme {
     color: color,
     letterSpacing: letterSpacing,
   );
-
-  /// Accent gradient for special elements.
-  static LinearGradient get accentGradient => const LinearGradient(
-    colors: [_accentTeal, _accentTealSoft],
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-  );
-
-  /// Glow box shadow for cards/buttons.
-  static List<BoxShadow> glowShadow([Color? color]) => [
-    BoxShadow(color: (color ?? _accentTeal).withAlpha(40), blurRadius: 20),
-  ];
 }

@@ -822,18 +822,6 @@ class LocalNotificationService {
     }
   }
 
-  /// Clears a previously shown ACP notification.
-  Future<void> clearAcpNotification(int notificationId) async {
-    final didInitialize = await initialize();
-    if (!didInitialize) return;
-
-    try {
-      await _plugin.cancel(id: notificationId);
-    } on MissingPluginException {
-      // Widget and unit tests don't register platform notification plugins.
-    }
-  }
-
   Future<bool> _initializeInternal() async {
     if (kIsWeb) return false;
     if (_disableNotificationsForStoreScreenshots) return false;

@@ -271,6 +271,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       _cachedSelection = null;
       _cachedMeasuredWidthText = null;
       _cachedMeasuredWidth = null;
+      _cachedMeasuredTextPainter?.dispose();
       _cachedMeasuredTextPainter = null;
       _cachedCaretX = null;
       _refreshCachedMetrics();
@@ -304,6 +305,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
   @override
   void dispose() {
+    _cachedMeasuredTextPainter?.dispose();
     widget.controller.removeListener(_handleControllerChanged);
     _editorFocusNode.dispose();
     _editorScrollController
@@ -552,7 +554,9 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
     )..layout();
-    return painter.height;
+    final height = painter.height;
+    painter.dispose();
+    return height;
   }
 
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
@@ -563,7 +567,9 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
     )..layout();
-    return painter.width +
+    final width = painter.width;
+    painter.dispose();
+    return width +
         _remoteEditorGutterLeftPadding +
         _remoteEditorGutterRightPadding;
   }
@@ -597,6 +603,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       painter,
       _unwrappedEditorTrailingSlack,
     );
+    _cachedMeasuredTextPainter?.dispose();
     _cachedMeasuredTextPainter = painter;
     _cachedMeasuredWidthTextDirection = textDirection;
     _cachedMeasuredWidthTextScale = textScale;

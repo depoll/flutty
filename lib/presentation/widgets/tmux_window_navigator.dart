@@ -1237,7 +1237,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           .read(telemetryServiceProvider)
           .logSessionHistoryOpened(
             tool: _telemetryAgentToolName(provider.toolName),
-            sessionCount: provider.sessions.length,
+            sessionCount: 0,
           ),
     );
     ToolSessionInfo? heldSession;

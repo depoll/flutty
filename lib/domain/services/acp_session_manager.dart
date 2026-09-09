@@ -1249,9 +1249,6 @@ class _BridgeAttachment {
   /// this attachment must be replaced rather than reused on reconnect.
   bool get isTerminated => _terminated || _closeFuture != null;
 
-  /// Current lease count. Exposed only for assertions and diagnostics.
-  int get refCount => _refCount;
-
   /// Marks the transport as terminally unusable without releasing a lease, so
   /// the next reconnect replaces it. Idempotent.
   void markTerminated() => _terminated = true;

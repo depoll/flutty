@@ -22,9 +22,6 @@ abstract final class SettingKeys {
   /// Terminal font size.
   static const terminalFontSize = 'terminal_font_size';
 
-  /// Terminal color scheme name.
-  static const terminalColorScheme = 'terminal_color_scheme';
-
   /// Default terminal theme ID for light mode.
   static const defaultTerminalThemeLight = 'default_terminal_theme_light';
 
@@ -64,24 +61,6 @@ abstract final class SettingKeys {
 
   /// Ask before closing a tmux or MonkeyMux terminal window.
   static const confirmMuxWindowClose = 'confirm_mux_window_close';
-
-  /// Enable haptic feedback.
-  static const hapticFeedback = 'haptic_feedback';
-
-  /// Keyboard toolbar configuration.
-  static const keyboardToolbar = 'keyboard_toolbar';
-
-  /// Auto-reconnect on connection drop.
-  static const autoReconnect = 'auto_reconnect';
-
-  /// Keep-alive interval in seconds.
-  static const keepAliveInterval = 'keep_alive_interval';
-
-  /// Default SSH port.
-  static const defaultPort = 'default_port';
-
-  /// Default username.
-  static const defaultUsername = 'default_username';
 
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
@@ -296,7 +275,7 @@ abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
     return state;
   }
 
-  /// Publishes a value after its persistent write has completed.
+  /// Publishes a user choice, including optimistic updates before persistence.
   ///
   /// Incrementing the revision prevents an older initialization read from
   /// replacing a newer user choice when both operations overlap.
@@ -336,12 +315,6 @@ final agentWindowModePreferenceNotifierProvider =
       AgentWindowModePreference
     >(AgentWindowModePreferenceNotifier.new);
 
-/// Provider for theme mode setting.
-final themeModeProvider = FutureProvider<String>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return await settings.getString(SettingKeys.themeMode) ?? 'system';
-});
-
 /// Notifier for theme mode with write capability.
 class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
   @override
@@ -362,7 +335,7 @@ class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
       ThemeMode.system => 'system',
     };
     await _settingsService.setString(SettingKeys.themeMode, value);
-    state = mode;
+    _setPersistedState(mode);
   }
 
   ThemeMode _parseThemeMode(String value) => switch (value) {
@@ -402,7 +375,7 @@ class TerminalThemesApplyToAppNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.terminalThemesApplyToApp,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
     ref.invalidate(terminalThemesApplyToAppProvider);
   }
 }
@@ -412,13 +385,6 @@ final terminalThemesApplyToAppNotifierProvider =
     NotifierProvider<TerminalThemesApplyToAppNotifier, bool>(
       TerminalThemesApplyToAppNotifier.new,
     );
-
-/// Provider for font size setting.
-final fontSizeProvider = FutureProvider<double>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  final value = await settings.getInt(SettingKeys.terminalFontSize);
-  return value?.toDouble() ?? 14.0;
-});
 
 /// Notifier for font size with write capability.
 class FontSizeNotifier extends _AsyncSettingsNotifier<double> {
@@ -436,7 +402,7 @@ class FontSizeNotifier extends _AsyncSettingsNotifier<double> {
 
   /// Set the font size.
   Future<void> setFontSize(double size) async {
-    state = size;
+    _setPersistedState(size);
     final writeToken = ++_latestWriteToken;
     final nextWrite = _writeChain.catchError((Object _) {}).then((_) async {
       if (_isDisposed || writeToken != _latestWriteToken) {
@@ -454,12 +420,6 @@ final fontSizeNotifierProvider = NotifierProvider<FontSizeNotifier, double>(
   FontSizeNotifier.new,
 );
 
-/// Provider for font family setting.
-final fontFamilyProvider = FutureProvider<String>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return await settings.getString(SettingKeys.terminalFont) ?? 'monospace';
-});
-
 /// Notifier for font family with write capability.
 class FontFamilyNotifier extends _AsyncSettingsNotifier<String> {
   @override
@@ -472,7 +432,7 @@ class FontFamilyNotifier extends _AsyncSettingsNotifier<String> {
   /// Set the font family.
   Future<void> setFontFamily(String family) async {
     await _settingsService.setString(SettingKeys.terminalFont, family);
-    state = family;
+    _setPersistedState(family);
   }
 }
 
@@ -480,12 +440,6 @@ class FontFamilyNotifier extends _AsyncSettingsNotifier<String> {
 final fontFamilyNotifierProvider = NotifierProvider<FontFamilyNotifier, String>(
   FontFamilyNotifier.new,
 );
-
-/// Provider for auto-lock timeout setting.
-final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return await settings.getInt(SettingKeys.autoLockTimeout) ?? 5;
-});
 
 /// Notifier for auto-lock timeout with write capability.
 class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
@@ -499,7 +453,7 @@ class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
   /// Set the auto-lock timeout in minutes.
   Future<void> setTimeout(int minutes) async {
     await _settingsService.setInt(SettingKeys.autoLockTimeout, minutes);
-    state = minutes;
+    _setPersistedState(minutes);
   }
 }
 
@@ -534,38 +488,6 @@ final confirmMuxWindowCloseNotifierProvider =
       ConfirmMuxWindowCloseNotifier.new,
     );
 
-/// Provider for haptic feedback setting.
-final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(SettingKeys.hapticFeedback, defaultValue: true);
-});
-
-/// Notifier for haptic feedback with write capability.
-class HapticFeedbackNotifier extends _AsyncSettingsNotifier<bool> {
-  @override
-  bool get _defaultValue => true;
-
-  @override
-  Future<bool> _loadValue() =>
-      _settingsService.getBool(SettingKeys.hapticFeedback, defaultValue: true);
-
-  /// Set haptic feedback enabled.
-  Future<void> setEnabled({required bool enabled}) async {
-    await _settingsService.setBool(SettingKeys.hapticFeedback, value: enabled);
-    state = enabled;
-  }
-}
-
-/// Provider for haptic feedback with write capability.
-final hapticFeedbackNotifierProvider =
-    NotifierProvider<HapticFeedbackNotifier, bool>(HapticFeedbackNotifier.new);
-
-/// Provider for cursor style setting.
-final cursorStyleProvider = FutureProvider<String>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return await settings.getString(SettingKeys.cursorStyle) ?? 'block';
-});
-
 /// Notifier for cursor style with write capability.
 class CursorStyleNotifier extends _AsyncSettingsNotifier<String> {
   @override
@@ -578,19 +500,13 @@ class CursorStyleNotifier extends _AsyncSettingsNotifier<String> {
   /// Set the cursor style.
   Future<void> setCursorStyle(String style) async {
     await _settingsService.setString(SettingKeys.cursorStyle, style);
-    state = style;
+    _setPersistedState(style);
   }
 }
 
 /// Provider for cursor style with write capability.
 final cursorStyleNotifierProvider =
     NotifierProvider<CursorStyleNotifier, String>(CursorStyleNotifier.new);
-
-/// Provider for bell sound setting.
-final bellSoundProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(SettingKeys.bellSound, defaultValue: true);
-});
 
 /// Notifier for bell sound with write capability.
 class BellSoundNotifier extends _AsyncSettingsNotifier<bool> {
@@ -604,7 +520,7 @@ class BellSoundNotifier extends _AsyncSettingsNotifier<bool> {
   /// Set bell sound enabled.
   Future<void> setEnabled({required bool enabled}) async {
     await _settingsService.setBool(SettingKeys.bellSound, value: enabled);
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -631,7 +547,7 @@ class TerminalNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.terminalNotifications,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -658,7 +574,7 @@ class AgentUpdateNotificationsNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.agentUpdateNotifications,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -683,7 +599,7 @@ class TerminalWakeLockNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.terminalWakeLock,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -710,7 +626,7 @@ class TerminalPathLinksNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.terminalPathLinks,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -737,7 +653,7 @@ class TerminalPathLinkUnderlinesNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.terminalPathLinkUnderlines,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -764,7 +680,7 @@ class PortForwardBrowserLinksNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.portForwardBrowserLinks,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -775,32 +691,23 @@ final portForwardBrowserLinksNotifierProvider =
     );
 
 /// Notifier for terminal shell completion popups with write capability.
-class ShellCompletionsNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class ShellCompletionsNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.shellCompletions,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.shellCompletions,
+    defaultValue: true,
+  );
 
   /// Sets terminal shell completion popups.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.shellCompletions, value: enabled);
-    state = enabled;
+    await _settingsService.setBool(
+      SettingKeys.shellCompletions,
+      value: enabled,
+    );
+    _setPersistedState(enabled);
   }
 }
 
@@ -941,7 +848,7 @@ class TerminalThemeSettingsNotifier
       SettingKeys.defaultTerminalThemeLight,
       themeId,
     );
-    state = state.copyWith(lightThemeId: themeId);
+    _setPersistedState(state.copyWith(lightThemeId: themeId));
   }
 
   /// Set the dark mode theme.
@@ -950,7 +857,7 @@ class TerminalThemeSettingsNotifier
       SettingKeys.defaultTerminalThemeDark,
       themeId,
     );
-    state = state.copyWith(darkThemeId: themeId);
+    _setPersistedState(state.copyWith(darkThemeId: themeId));
   }
 }
 
@@ -984,7 +891,7 @@ class SharedClipboardNotifier extends _AsyncSettingsNotifier<bool> {
   /// Set shared clipboard enabled.
   Future<void> setEnabled({required bool enabled}) async {
     await _settingsService.setBool(SettingKeys.sharedClipboard, value: enabled);
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -1009,7 +916,7 @@ class SharedClipboardLocalReadNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.sharedClipboardLocalRead,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 
@@ -1036,7 +943,7 @@ class TapToShowKeyboardNotifier extends _AsyncSettingsNotifier<bool> {
       SettingKeys.tapToShowKeyboard,
       value: enabled,
     );
-    state = enabled;
+    _setPersistedState(enabled);
   }
 }
 

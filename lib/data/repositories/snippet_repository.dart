@@ -2,7 +2,6 @@ import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../database/database.dart';
-import 'like_query.dart';
 
 /// Repository for managing snippets.
 class SnippetRepository {
@@ -16,21 +15,6 @@ class SnippetRepository {
 
   /// Watch all snippets.
   Stream<List<Snippet>> watchAll() => _orderedSnippetsQuery().watch();
-
-  /// Search snippets.
-  Future<List<Snippet>> search(String query) {
-    final escaped = escapeSqlLikeQuery(query);
-    return (_orderedSnippetsQuery()..where(
-          (s) =>
-              s.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              s.command.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              s.description.like(
-                '%$escaped%',
-                escapeChar: sqlLikeEscapeCharacter,
-              ),
-        ))
-        .get();
-  }
 
   /// Get a snippet by ID.
   Future<Snippet?> getById(int id) => (_db.select(

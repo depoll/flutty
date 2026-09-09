@@ -802,13 +802,18 @@ void main() {
       label: 'My Agent',
       launchCommand: AcpLaunchCommand(executable: 'agent'),
     );
-    await providerService.saveCustomProvider(
-      definition.update(
-        launchCommand: AcpLaunchCommand(
-          executable: 'agent',
-          arguments: const ['--changed'],
-        ),
-      ),
+    await settings.setString(
+      SettingKeys.acpCustomProviders,
+      jsonEncode([
+        definition
+            .update(
+              launchCommand: AcpLaunchCommand(
+                executable: 'agent',
+                arguments: const ['--changed'],
+              ),
+            )
+            .toJson(),
+      ]),
     );
     final result = await manager.startNewSession(
       hostId: 1,

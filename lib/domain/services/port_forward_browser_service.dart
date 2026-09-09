@@ -37,13 +37,6 @@ int portForwardBrowserUriPort(Uri uri) {
   };
 }
 
-/// Builds the local URL used to browse a local port forward.
-Uri buildPortForwardBrowserUri(PortForward portForward) =>
-    buildPortForwardBrowserUriForBind(
-      localHost: portForward.localHost,
-      localPort: portForward.localPort,
-    );
-
 /// Builds the local URL used to browse a local bind address and port.
 Uri buildPortForwardBrowserUriForBind({
   required String localHost,
@@ -110,21 +103,6 @@ String generatedPortProxyName(
 }) {
   final suffix = includeHostId && hostId != null ? '-$hostId' : '';
   return '${generatedPortProxySlug(hostLabel)}$suffix';
-}
-
-/// Resolves the full `.localhost` proxy domain for a host.
-String hostPortProxyDomain({
-  required String hostLabel,
-  required int hostId,
-  String? customName,
-  String? generatedName,
-}) {
-  final normalizedCustomName = normalizeOptionalPortProxyName(customName);
-  final prefix =
-      normalizedCustomName ??
-      generatedName ??
-      generatedPortProxyName(hostLabel, hostId: hostId);
-  return '$prefix.localhost';
 }
 
 /// Rewrites a loopback [uri] for one forwarded service's browser-only relay.
@@ -196,17 +174,6 @@ Uri buildPortForwardBrowserFallbackRequestUri({
     port: portForwardBrowserUriPort(fallbackUri),
   );
 }
-
-/// Returns whether [uri] should stay inside the embedded browser.
-///
-/// Only loopback web links whose port is owned by an active local forward are
-/// treated as forwarded pages; other localhost links keep the normal launcher.
-bool shouldOpenUriInPortForwardBrowser(
-  Uri uri, {
-  required Iterable<int> activeLocalPorts,
-}) =>
-    isPortForwardBrowserHost(uri.host) &&
-    activeLocalPorts.any((port) => isPortForwardBrowserUri(uri, port: port));
 
 /// Returns whether [uri] is allowed for the forwarded local [port].
 bool isPortForwardBrowserUri(Uri uri, {required int port}) =>

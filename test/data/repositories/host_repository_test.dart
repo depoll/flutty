@@ -406,7 +406,10 @@ void main() {
 
       expect(host, isNotNull);
       expect(host!.password, isNull);
-      await repository.toggleFavorite(id);
+      await repository.updateFields(
+        id,
+        const HostsCompanion(isFavorite: Value(true)),
+      );
       await repository.updateLastConnected(id);
       await repository.update(host.copyWith(label: 'Renamed Host'));
 
@@ -824,7 +827,7 @@ void main() {
       expect(decrypted!.password, plaintextPassword);
     });
 
-    test('toggleFavorite does not double-encrypt the password', () async {
+    test('favorite field updates do not double-encrypt the password', () async {
       const plaintextPassword = 'fav-password';
       final id = await repository.insert(
         HostsCompanion.insert(
@@ -836,8 +839,14 @@ void main() {
       );
 
       // Two toggles to exercise the full update cycle twice.
-      await repository.toggleFavorite(id);
-      await repository.toggleFavorite(id);
+      await repository.updateFields(
+        id,
+        const HostsCompanion(isFavorite: Value(true)),
+      );
+      await repository.updateFields(
+        id,
+        const HostsCompanion(isFavorite: Value(false)),
+      );
 
       final rawHost = await (db.select(
         db.hosts,
@@ -946,51 +955,6 @@ void main() {
       expect(deleted, 0);
     });
 
-    test('concurrent favorite toggles each take effect', () async {
-      final id = await repository.insert(
-        HostsCompanion.insert(
-          label: 'Server',
-          hostname: 'example.com',
-          username: 'user',
-        ),
-      );
-      expect(
-        await Future.wait(
-          List.generate(10, (_) => repository.toggleFavorite(id)),
-        ),
-        everyElement(isTrue),
-      );
-      expect((await repository.getById(id))!.isFavorite, isFalse);
-    });
-
-    test('toggleFavorite toggles favorite status', () async {
-      final id = await repository.insert(
-        HostsCompanion.insert(
-          label: 'Test Server',
-          hostname: '192.168.1.1',
-          username: 'admin',
-        ),
-      );
-
-      var host = await repository.getById(id);
-      expect(host!.isFavorite, isFalse);
-
-      await repository.toggleFavorite(id);
-
-      host = await repository.getById(id);
-      expect(host!.isFavorite, isTrue);
-
-      await repository.toggleFavorite(id);
-
-      host = await repository.getById(id);
-      expect(host!.isFavorite, isFalse);
-    });
-
-    test('toggleFavorite returns false when host not exists', () async {
-      final result = await repository.toggleFavorite(999);
-      expect(result, isFalse);
-    });
-
     test('setAutoForwardPorts persists automatic port detection', () async {
       final id = await repository.insert(
         HostsCompanion.insert(
@@ -1097,160 +1061,8 @@ void main() {
       expect(await repository.setAutoForwardPorts(999, enabled: true), isFalse);
     });
 
-    test('search finds hosts by label', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Production Server',
-          hostname: '10.0.0.1',
-          username: 'admin',
-        ),
-      );
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Dev Server',
-          hostname: '192.168.1.1',
-          username: 'dev',
-        ),
-      );
-
-      final results = await repository.search('Production');
-      expect(results, hasLength(1));
-      expect(results.first.label, 'Production Server');
-    });
-
-    test('search finds hosts by hostname', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Server 1',
-          hostname: 'prod.example.com',
-          username: 'admin',
-        ),
-      );
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Server 2',
-          hostname: 'dev.example.com',
-          username: 'dev',
-        ),
-      );
-
-      final results = await repository.search('prod');
-      expect(results, hasLength(1));
-      expect(results.first.hostname, 'prod.example.com');
-    });
-
-    test('search finds hosts by tags', () async {
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Tagged Server',
-          hostname: 'tagged.example.com',
-          username: 'admin',
-          tags: const Value('prod,critical'),
-        ),
-      );
-      await repository.insert(
-        HostsCompanion.insert(
-          label: 'Other Server',
-          hostname: 'other.example.com',
-          username: 'admin',
-          tags: const Value('dev'),
-        ),
-      );
-
-      final results = await repository.search('critical');
-      expect(results, hasLength(1));
-      expect(results.first.label, 'Tagged Server');
-    });
-
     // Wildcard-safety tests: % and _ in the query must be treated as
     // literal characters, not as SQL LIKE metacharacters.
-
-    test(
-      'search treats percent as a literal character, not a wildcard',
-      () async {
-        await repository.insert(
-          HostsCompanion.insert(
-            label: '99% uptime',
-            hostname: 'uptime.example.com',
-            username: 'admin',
-          ),
-        );
-        await repository.insert(
-          HostsCompanion.insert(
-            label: 'No special chars',
-            hostname: 'normal.example.com',
-            username: 'admin',
-          ),
-        );
-
-        // Without escaping, '%' would match every host; with escaping it
-        // matches only hosts that literally contain '%'.
-        final results = await repository.search('%');
-        expect(results, hasLength(1));
-        expect(results.first.label, '99% uptime');
-      },
-    );
-
-    test(
-      'search treats underscore as a literal character, not a wildcard',
-      () async {
-        await repository.insert(
-          HostsCompanion.insert(
-            label: 'web_server',
-            hostname: 'web.example.com',
-            username: 'admin',
-          ),
-        );
-        await repository.insert(
-          HostsCompanion.insert(
-            label: 'api server',
-            hostname: 'api.example.com',
-            username: 'admin',
-          ),
-        );
-
-        // 'web_' should match only the host whose label contains the literal
-        // substring "web_", not "web" followed by any single character.
-        final results = await repository.search('web_');
-        expect(results, hasLength(1));
-        expect(results.first.label, 'web_server');
-      },
-    );
-
-    test(
-      'search with percent does not return hosts that lack a literal percent',
-      () async {
-        await repository.insert(
-          HostsCompanion.insert(
-            label: 'Normal Server',
-            hostname: 'normal.example.com',
-            username: 'admin',
-          ),
-        );
-
-        // A bare '%' query should return nothing when no host data contains '%'.
-        final results = await repository.search('%');
-        expect(results, isEmpty);
-      },
-    );
-
-    test(
-      'search with underscore does not cross-match non-underscore hosts',
-      () async {
-        await repository.insert(
-          HostsCompanion.insert(
-            label: 'abc',
-            hostname: 'abc.example.com',
-            username: 'admin',
-          ),
-        );
-
-        // Without escaping, 'a_c' would match 'abc' (any single char between
-        // a and c). With escaping it should return nothing.
-        final results = await repository.search('a_c');
-        expect(results, isEmpty);
-      },
-    );
 
     test('updateLastConnected updates timestamp', () async {
       final id = await repository.insert(

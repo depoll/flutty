@@ -62,9 +62,6 @@ final monkeyMuxServiceProvider = Provider<MonkeyMuxService>(
 /// How the helper should handle an already-running server with an older
 /// version when attaching to a MonkeyMux session.
 enum MonkeyMuxServerUpdatePolicy {
-  /// Ask on the terminal. Intended for manual helper use only.
-  prompt('prompt'),
-
   /// Keep the current server and suppress terminal prompts.
   never('never'),
 
@@ -101,10 +98,6 @@ class MonkeyMuxServerStatus {
 
   /// Whether the server can be shut down through the control channel.
   bool get supportsShutdown => capabilities.contains('shutdown');
-
-  /// Whether attached clients can clip a focused client's shared PTY grid.
-  bool get supportsViewportClipping =>
-      capabilities.contains('client-viewport-clipping');
 
   /// Whether control input can preserve explicit bracketed-paste semantics.
   bool get supportsBracketedPasteControlInput =>

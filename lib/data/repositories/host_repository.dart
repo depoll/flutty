@@ -7,7 +7,6 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
-import 'like_query.dart';
 import 'plaintext_cache.dart';
 
 /// Repository for managing host entities.
@@ -126,25 +125,6 @@ class HostRepository {
       return normalizedCustomName;
     }
     return existingGeneratedNames[hostId] ?? generatedPortProxySlug(label);
-  }
-
-  /// Search hosts by label, hostname, or tags.
-  ///
-  /// The query is treated as a literal string: `%` and `_` are matched
-  /// exactly rather than acting as SQL LIKE wildcards.
-  Future<List<Host>> search(String query) {
-    final escaped = escapeSqlLikeQuery(query);
-    return (_orderedHostsQuery()..where(
-          (h) =>
-              h.label.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              h.hostname.like(
-                '%$escaped%',
-                escapeChar: sqlLikeEscapeCharacter,
-              ) |
-              h.tags.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
-        ))
-        .get()
-        .then(_decryptHosts);
   }
 
   /// Insert a new host.
@@ -277,13 +257,6 @@ class HostRepository {
       _undecryptablePasswordHostIds.remove(id);
     }
     return deleted;
-  }
-
-  /// Toggle favorite status.
-  Future<bool> toggleFavorite(int id) async {
-    final updated = await (_db.update(_db.hosts)..where((h) => h.id.equals(id)))
-        .write(HostsCompanion.custom(isFavorite: _db.hosts.isFavorite.not()));
-    return updated > 0;
   }
 
   /// Applies a partial column update to a single host.

@@ -964,9 +964,8 @@ class AcpCustomProviderDefinition {
   ///
   /// This never silently re-approves a changed command: [approval] is
   /// always preserved as-is, so changing [launchCommand] to a different
-  /// value makes [isCommandApproved] become `false` until the UI explicitly
-  /// calls [approveCurrentCommand] after the user reviews and confirms the
-  /// new exact command text. Throws a [FormatException] if the new [label]
+  /// value makes [isCommandApproved] become `false`. Imported approval must
+  /// match the exact new command text. Throws a [FormatException] if the new [label]
   /// or [launchCommand] fail validation.
   AcpCustomProviderDefinition update({
     String? label,
@@ -986,24 +985,6 @@ class AcpCustomProviderDefinition {
       label: normalizedLabel,
       launchCommand: nextCommand,
       approval: approval,
-      createdAt: createdAt,
-      updatedAt: timestamp,
-    );
-  }
-
-  /// Approves the current [launchCommand] as of [now] (defaulting to the
-  /// current UTC time), making [isCommandApproved] become `true`.
-  ///
-  /// The UI must call this only after the user has reviewed and explicitly
-  /// confirmed the exact current command text; it must never be called
-  /// automatically as a side effect of [update].
-  AcpCustomProviderDefinition approveCurrentCommand({DateTime? now}) {
-    final timestamp = (now ?? DateTime.now()).toUtc();
-    return AcpCustomProviderDefinition._(
-      id: id,
-      label: label,
-      launchCommand: launchCommand,
-      approval: AcpCommandApproval.approve(launchCommand, now: timestamp),
       createdAt: createdAt,
       updatedAt: timestamp,
     );

@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -167,6 +168,40 @@ void main() {
         horizontalScrollController: horizontalScrollController,
       ),
     );
+
+    testWidgets('disposes measurement painters on replacement and teardown', (
+      tester,
+    ) async {
+      final painters = <TextPainter>[];
+      void onAllocation(ObjectEvent event) {
+        if (event is ObjectCreated && event.object is TextPainter) {
+          painters.add(event.object as TextPainter);
+        }
+      }
+
+      FlutterMemoryAllocations.instance.addListener(onAllocation);
+      addTearDown(
+        () => FlutterMemoryAllocations.instance.removeListener(onAllocation),
+      );
+      final first = TextEditingController(text: 'first line');
+      final second = TextEditingController(text: 'replacement controller');
+      addTearDown(first.dispose);
+      addTearDown(second.dispose);
+
+      await tester.pumpWidget(buildEditor(controller: first));
+      await tester.pumpAndSettle();
+      // Text changes replace the cached content painter.
+      first.text = 'a longer line with a different measured width';
+      await tester.pumpAndSettle();
+      // A controller change clears the cache before measuring again.
+      await tester.pumpWidget(buildEditor(controller: second));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+
+      expect(painters, isNotEmpty);
+      expect(painters.where((painter) => !painter.debugDisposed), isEmpty);
+    });
 
     testWidgets('populates caretX cache after first frame', (tester) async {
       final controller = TextEditingController(text: 'hello world')

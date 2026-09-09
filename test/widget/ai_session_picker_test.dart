@@ -30,13 +30,7 @@ void main() {
     test('keeps provider availability visible while refreshing', () {
       const entry = AiSessionProviderEntry(
         toolName: 'Codex',
-        sessions: <ToolSessionInfo>[
-          ToolSessionInfo(
-            toolName: 'Codex',
-            sessionId: 'session-1',
-            summary: 'Refresh in place',
-          ),
-        ],
+        hasSessions: true,
         wasAttempted: true,
         hasFailure: false,
         isLoading: true,

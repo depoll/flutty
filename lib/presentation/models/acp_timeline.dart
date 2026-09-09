@@ -598,10 +598,6 @@ class AcpPlan extends Equatable {
   int get completedCount =>
       items.where((i) => i.status == AcpPlanItemStatus.completed).length;
 
-  /// The number of in-progress items.
-  int get inProgressCount =>
-      items.where((i) => i.status == AcpPlanItemStatus.inProgress).length;
-
   /// The total number of items.
   int get totalCount => items.length;
 

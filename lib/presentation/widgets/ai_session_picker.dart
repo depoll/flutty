@@ -13,18 +13,17 @@ class AiSessionProviderEntry {
   /// Creates a new [AiSessionProviderEntry].
   const AiSessionProviderEntry({
     required this.toolName,
-    required this.sessions,
+    required this.hasSessions,
     required this.wasAttempted,
     required this.hasFailure,
     required this.isLoading,
-    this.hasSessionsOverride,
   });
 
   /// Provider display name.
   final String toolName;
 
-  /// Sessions discovered for this provider.
-  final List<ToolSessionInfo> sessions;
+  /// Whether the provider currently has at least one discovered session.
+  final bool hasSessions;
 
   /// Whether discovery finished for this provider in the current pass.
   final bool wasAttempted;
@@ -34,12 +33,6 @@ class AiSessionProviderEntry {
 
   /// Whether this provider is still pending during the current load.
   final bool isLoading;
-
-  /// Optional explicit session-availability flag for lightweight row updates.
-  final bool? hasSessionsOverride;
-
-  /// Whether the provider currently has at least one discovered session.
-  bool get hasSessions => hasSessionsOverride ?? sessions.isNotEmpty;
 
   /// Full status text for roomy list tiles.
   String get statusLabel {
@@ -293,11 +286,10 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
   AiSessionProviderEntry _createInitialEntry(String toolName) =>
       AiSessionProviderEntry(
         toolName: toolName,
-        sessions: const <ToolSessionInfo>[],
         wasAttempted: false,
         hasFailure: false,
         isLoading: false,
-        hasSessionsOverride: false,
+        hasSessions: false,
       );
 
   ValueNotifier<AiSessionProviderEntry> _entryNotifier(String toolName) =>
@@ -328,11 +320,10 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
     final notifier = _entryNotifier(toolName);
     final next = AiSessionProviderEntry(
       toolName: toolName,
-      sessions: const <ToolSessionInfo>[],
       wasAttempted: wasAttempted,
       hasFailure: hasFailure,
       isLoading: isLoading,
-      hasSessionsOverride: hasSessions,
+      hasSessions: hasSessions,
     );
     if (_sameEntry(notifier.value, next)) {
       return;

@@ -218,9 +218,6 @@ class TmuxWindow {
   /// `currentCommand`, including when it is the currently selected window.
   bool get isIdle => idleSeconds != null && idleSeconds! > _idleThreshold;
 
-  /// Whether the window appears to be actively running work.
-  bool get isRunning => !hasAlert && !isIdle;
-
   /// Whether the window's status can still change from running to waiting
   /// without tmux emitting a new control-mode notification.
   bool get needsLocalIdleRefresh =>

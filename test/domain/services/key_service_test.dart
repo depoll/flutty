@@ -38,28 +38,6 @@ void main() {
       });
     });
 
-    group('getById', () {
-      test('returns key when exists', () async {
-        final id = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'My Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-key-material...',
-          ),
-        );
-
-        final key = await keyService.getById(id);
-        expect(key, isNotNull);
-        expect(key!.name, 'My Key');
-      });
-
-      test('returns null when not exists', () async {
-        final key = await keyService.getById(999);
-        expect(key, isNull);
-      });
-    });
-
     group('importKey', () {
       test('returns null for invalid PEM', () async {
         final result = await keyService.importKey(

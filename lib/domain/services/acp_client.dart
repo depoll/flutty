@@ -84,8 +84,6 @@ final class AcpClient {
   final Queue<AcpServerRequest> _pendingServerRequests =
       Queue<AcpServerRequest>();
   var _pendingServerRequestFlushScheduled = false;
-  final _otherNotifications =
-      StreamController<AcpJsonRpcNotification>.broadcast(sync: true);
   late final StreamSubscription<AcpJsonRpcNotification>
   _notificationSubscription;
   late final StreamSubscription<AcpJsonRpcServerRequest>
@@ -101,10 +99,6 @@ final class AcpClient {
 
   /// Typed incoming server requests.
   Stream<AcpServerRequest> get serverRequests => _serverRequests.stream;
-
-  /// Notifications not handled by the typed ACP layer.
-  Stream<AcpJsonRpcNotification> get otherNotifications =>
-      _otherNotifications.stream;
 
   /// Initializes the ACP connection.
   Future<AcpInitializeResult> initialize({
@@ -387,7 +381,6 @@ final class AcpClient {
     _pendingServerRequests.clear();
     await _updates.close();
     await _serverRequests.close();
-    await _otherNotifications.close();
   }
 
   Future<AcpSessionSetupResult> _sessionSetupRequest(
@@ -407,12 +400,10 @@ final class AcpClient {
 
   void _handleNotification(AcpJsonRpcNotification notification) {
     if (notification.method != 'session/update') {
-      _otherNotifications.add(notification);
       return;
     }
     final params = AcpJson.object(notification.params);
     if (params == null) {
-      _otherNotifications.add(notification);
       return;
     }
     _updates.add(AcpSessionNotification.fromJson(params));

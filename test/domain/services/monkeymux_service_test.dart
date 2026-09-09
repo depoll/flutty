@@ -190,7 +190,6 @@ void main() {
       expect(status.supportsShutdown, isTrue);
       expect(status.hasNativeAcpWindows, isFalse);
       expect(status.nativeAcpWindowCount, 0);
-      expect(status.supportsViewportClipping, isTrue);
       expect(status.supportsBracketedPasteControlInput, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);

@@ -1,5 +1,7 @@
 import 'package:flutter/widgets.dart';
-import 'package:highlight/highlight.dart' show highlight, Node;
+import 'package:highlight/highlight.dart' show highlight;
+
+import 'highlight_nodes.dart';
 
 /// Maximum text length (in characters) for which syntax highlighting is
 /// applied.
@@ -87,7 +89,7 @@ class SyntaxHighlightController extends TextEditingController {
         );
       }
 
-      final highlightedChildren = _convertNodes(nodes);
+      final highlightedChildren = convertHighlightNodes(nodes, theme);
       final highlighted = TextSpan(style: style, children: highlightedChildren);
 
       _cachedText = source;
@@ -101,29 +103,6 @@ class SyntaxHighlightController extends TextEditingController {
         withComposing: withComposing,
       );
     }
-  }
-
-  /// Recursively converts highlight.js [Node]s into [TextSpan] children.
-  List<TextSpan> _convertNodes(List<Node> nodes) {
-    final spans = <TextSpan>[];
-    for (final node in nodes) {
-      if (node.value != null) {
-        spans.add(
-          TextSpan(
-            text: node.value,
-            style: node.className != null ? theme[node.className!] : null,
-          ),
-        );
-      } else if (node.children != null) {
-        spans.add(
-          TextSpan(
-            style: node.className != null ? theme[node.className!] : null,
-            children: _convertNodes(node.children!),
-          ),
-        );
-      }
-    }
-    return spans;
   }
 
   /// Invalidates the internal cache, forcing the next [buildTextSpan] call to
