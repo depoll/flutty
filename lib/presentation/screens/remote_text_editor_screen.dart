@@ -71,62 +71,6 @@ double resolveRemoteEditorVisualScale({
 int resolveRemoteEditorGutterDigitSlots(int lineCount) =>
     math.max(_remoteEditorGutterDigitSlots, lineCount.toString().length);
 
-/// Measures the width needed to display unwrapped editor lines without clipping.
-@visibleForTesting
-double measureUnwrappedEditorContentWidth({
-  required Iterable<String> lines,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
-}) {
-  final painter = measureLineWidth == null
-      ? TextPainter(
-          textDirection: textDirection,
-          textScaler: textScaler,
-          maxLines: 1,
-        )
-      : null;
-  var maxWidth = 0.0;
-  var hasVisibleText = false;
-
-  for (final line in lines) {
-    if (line.isEmpty) {
-      continue;
-    }
-
-    hasVisibleText = true;
-    final lineWidth =
-        measureLineWidth?.call(line, style) ??
-        (painter!
-              ..text = TextSpan(text: line, style: style)
-              ..layout())
-            .width;
-    if (lineWidth > maxWidth) {
-      maxWidth = lineWidth;
-    }
-  }
-
-  return hasVisibleText ? maxWidth + trailingSlack : 0;
-}
-
-/// Measures rich editor text exactly as [EditableText] lays it out.
-@visibleForTesting
-double measureUnwrappedEditorTextSpanContentWidth({
-  required InlineSpan textSpan,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-}) => _measureLaidOutUnwrappedEditorContentWidth(
-  _layoutUnwrappedEditorTextSpan(
-    textSpan: textSpan,
-    textDirection: textDirection,
-    textScaler: textScaler,
-  ),
-  trailingSlack,
-);
-
 TextPainter _layoutUnwrappedEditorTextSpan({
   required InlineSpan textSpan,
   required TextDirection textDirection,
@@ -141,125 +85,6 @@ double _measureLaidOutUnwrappedEditorContentWidth(
   TextPainter painter,
   double trailingSlack,
 ) => painter.width > 0 ? painter.width + trailingSlack : 0;
-
-/// Returns the current line prefix that appears before the text offset.
-@visibleForTesting
-String currentLinePrefixAtTextOffset(String text, int textOffset) {
-  final clampedOffset = textOffset < 0
-      ? 0
-      : textOffset > text.length
-      ? text.length
-      : textOffset;
-  if (clampedOffset == 0) {
-    return '';
-  }
-  final lineStart = text.lastIndexOf('\n', clampedOffset - 1);
-  final prefixStart = lineStart == -1 ? 0 : lineStart + 1;
-  return text.substring(prefixStart, clampedOffset);
-}
-
-/// Resolves the horizontal scroll offset needed to keep the current selection visible.
-@visibleForTesting
-double resolveUnwrappedEditorSelectionScrollOffset({
-  required String text,
-  required TextSelection selection,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  required double viewportWidth,
-  double currentOffset = 0,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
-}) {
-  if (!selection.isValid || viewportWidth <= 0) {
-    return currentOffset;
-  }
-
-  final prefix = currentLinePrefixAtTextOffset(text, selection.extentOffset);
-  final caretOffset = measureUnwrappedEditorContentWidth(
-    lines: [prefix],
-    style: style,
-    textDirection: textDirection,
-    textScaler: textScaler,
-    trailingSlack: 0,
-    measureLineWidth: measureLineWidth,
-  );
-  final viewportEnd = currentOffset + viewportWidth;
-  final caretLeadingEdge = caretOffset > trailingSlack
-      ? caretOffset - trailingSlack
-      : 0.0;
-  final caretTrailingEdge = caretOffset + trailingSlack;
-
-  if (caretLeadingEdge < currentOffset) {
-    return caretLeadingEdge;
-  }
-  if (caretTrailingEdge > viewportEnd) {
-    return caretTrailingEdge - viewportWidth;
-  }
-  return currentOffset;
-}
-
-/// Resolves the horizontal scroll offset for rich unwrapped editor text.
-@visibleForTesting
-double resolveUnwrappedEditorTextSpanSelectionScrollOffset({
-  required InlineSpan textSpan,
-  required TextSelection selection,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  required double viewportWidth,
-  double currentOffset = 0,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-}) {
-  if (!selection.isValid || viewportWidth <= 0) {
-    return currentOffset;
-  }
-
-  final plainText = textSpan.toPlainText(includeSemanticsLabels: false);
-  final painter = _layoutUnwrappedEditorTextSpan(
-    textSpan: textSpan,
-    textDirection: textDirection,
-    textScaler: textScaler,
-  );
-  return _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
-    painter: painter,
-    selection: selection,
-    textLength: plainText.length,
-    viewportWidth: viewportWidth,
-    currentOffset: currentOffset,
-    trailingSlack: trailingSlack,
-  );
-}
-
-double _resolveUnwrappedEditorTextPainterSelectionScrollOffset({
-  required TextPainter painter,
-  required TextSelection selection,
-  required int textLength,
-  required double viewportWidth,
-  required double currentOffset,
-  required double trailingSlack,
-}) {
-  final selectionOffset = selection.extentOffset < 0
-      ? 0
-      : selection.extentOffset > textLength
-      ? textLength
-      : selection.extentOffset;
-  final caretOffset = painter
-      .getOffsetForCaret(TextPosition(offset: selectionOffset), Rect.zero)
-      .dx;
-  final viewportEnd = currentOffset + viewportWidth;
-  final caretLeadingEdge = caretOffset > trailingSlack
-      ? caretOffset - trailingSlack
-      : 0.0;
-  final caretTrailingEdge = caretOffset + trailingSlack;
-
-  if (caretLeadingEdge < currentOffset) {
-    return caretLeadingEdge;
-  }
-  if (caretTrailingEdge > viewportEnd) {
-    return caretTrailingEdge - viewportWidth;
-  }
-  return currentOffset;
-}
 
 /// Resolves the current editor line and column from a selection.
 @visibleForTesting
@@ -446,6 +271,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       _cachedSelection = null;
       _cachedMeasuredWidthText = null;
       _cachedMeasuredWidth = null;
+      _cachedMeasuredTextPainter?.dispose();
       _cachedMeasuredTextPainter = null;
       _cachedCaretX = null;
       _refreshCachedMetrics();
@@ -479,6 +305,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
   @override
   void dispose() {
+    _cachedMeasuredTextPainter?.dispose();
     widget.controller.removeListener(_handleControllerChanged);
     _editorFocusNode.dispose();
     _editorScrollController
@@ -727,7 +554,9 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
     )..layout();
-    return painter.height;
+    final height = painter.height;
+    painter.dispose();
+    return height;
   }
 
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
@@ -738,7 +567,9 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
     )..layout();
-    return painter.width +
+    final width = painter.width;
+    painter.dispose();
+    return width +
         _remoteEditorGutterLeftPadding +
         _remoteEditorGutterRightPadding;
   }
@@ -772,6 +603,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       painter,
       _unwrappedEditorTrailingSlack,
     );
+    _cachedMeasuredTextPainter?.dispose();
     _cachedMeasuredTextPainter = painter;
     _cachedMeasuredWidthTextDirection = textDirection;
     _cachedMeasuredWidthTextScale = textScale;

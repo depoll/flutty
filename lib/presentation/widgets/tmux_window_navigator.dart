@@ -303,12 +303,6 @@ enum AgentWindowMode {
   nativeAcp,
 }
 
-/// Safely normalizes a preference loaded through an untyped widget boundary.
-AgentWindowModePreference normalizeAgentWindowModePreference(Object value) =>
-    value is AgentWindowModePreference
-    ? value
-    : AgentWindowModePreference.askEveryTime;
-
 /// Resolves the app-wide default or presents a one-off mode chooser.
 ///
 /// Terminal and native modes are available on every tier. [isProUser] only
@@ -1243,7 +1237,7 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
           .read(telemetryServiceProvider)
           .logSessionHistoryOpened(
             tool: _telemetryAgentToolName(provider.toolName),
-            sessionCount: provider.sessions.length,
+            sessionCount: 0,
           ),
     );
     ToolSessionInfo? heldSession;
@@ -1997,62 +1991,13 @@ class _TmuxNavigatorSheetState extends ConsumerState<_TmuxNavigatorSheet> {
   Widget _buildSessionProviderTile(
     ThemeData theme,
     AiSessionProviderEntry provider,
-  ) => ListTile(
-    dense: true,
+  ) => AiSessionProviderTile(
+    provider: provider,
+    onTap: () => unawaited(_showSessionPickerForTool(provider)),
     visualDensity: _tmuxNavigatorDenseVisualDensity,
-    minVerticalPadding: 2,
     contentPadding: _tmuxNavigatorGroupTilePadding,
-    horizontalTitleGap: 12,
     minLeadingWidth: 20,
-    leading: AgentToolIcon(
-      toolName: provider.toolName,
-      color: theme.colorScheme.primary,
-    ),
-    title: Text(
-      provider.toolName,
-      style: theme.textTheme.bodyMedium?.copyWith(
-        color: provider.hasFailure
-            ? theme.colorScheme.error
-            : provider.isSelectable
-            ? theme.colorScheme.onSurface
-            : theme.colorScheme.onSurfaceVariant,
-      ),
-    ),
-    subtitle: Text(
-      provider.statusLabel,
-      style: theme.textTheme.bodySmall?.copyWith(
-        color: provider.hasFailure
-            ? theme.colorScheme.error
-            : theme.colorScheme.onSurfaceVariant,
-      ),
-    ),
-    trailing: provider.isLoading && !provider.hasSessions
-        ? const SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-          )
-        : Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (provider.isLoading) ...[
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                ),
-                const SizedBox(width: 4),
-              ],
-              if (provider.isSelectable)
-                Icon(
-                  Icons.chevron_right,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-            ],
-          ),
-    onTap: provider.isSelectable
-        ? () => unawaited(_showSessionPickerForTool(provider))
-        : null,
+    iconColor: theme.colorScheme.primary,
   );
 }
 

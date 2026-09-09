@@ -126,6 +126,86 @@ void main() {
     await db.close();
   });
 
+  for (final migration in [false, true]) {
+    test(
+      'round trips structured multiplexer settings, migration=$migration',
+      () async {
+        final id = await hostRepository.insert(
+          HostsCompanion.insert(
+            sortOrder: const Value(8),
+            label: 'Mux host',
+            hostname: 'example.com',
+            username: 'demo',
+            tmuxSessionName: const Value('workspace'),
+            tmuxWorkingDirectory: const Value('/repo'),
+            remoteMuxBackend: const Value('monkeyMux'),
+            tmuxExtraFlags: const Value('-f /untrusted/config'),
+            autoConnectCommand: const Value('echo review'),
+          ),
+        );
+        final original = (await hostRepository.getById(id))!;
+        final encoded = migration
+            ? await transferService.createFullMigrationPayload(
+                transferPassphrase: 'test',
+              )
+            : await transferService.createHostPayload(
+                host: original,
+                transferPassphrase: 'test',
+              );
+        final payload = await transferService.decryptPayload(
+          encodedPayload: encoded,
+          transferPassphrase: 'test',
+        );
+        final Host imported;
+        if (migration) {
+          await transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: MigrationImportMode.replace,
+          );
+          imported = (await hostRepository.getAll()).single;
+        } else {
+          imported = await transferService.importHostPayload(payload);
+        }
+        expect(imported.sortOrder, migration ? 8 : 9);
+        expect(imported.tmuxSessionName, 'workspace');
+        expect(imported.tmuxWorkingDirectory, '/repo');
+        expect(imported.remoteMuxBackend, 'monkeyMux');
+        expect(imported.tmuxExtraFlags, isNull);
+        expect(imported.autoConnectRequiresConfirmation, isTrue);
+      },
+    );
+  }
+
+  for (final table in ['groups', 'snippetFolders']) {
+    for (final cycle in [false, true]) {
+      test('rolls back invalid $table hierarchy, cycle=$cycle', () async {
+        await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Keep',
+            hostname: 'example.com',
+            username: 'demo',
+          ),
+        );
+        await expectLater(
+          transferService.importMigrationData(
+            mode: MigrationImportMode.replace,
+            data: {
+              table: [
+                {'id': 1, 'name': 'Root'},
+                {'id': 2, 'name': 'Child', 'parentId': 3},
+                if (cycle) {'id': 3, 'name': 'Cycle', 'parentId': 2},
+              ],
+            },
+          ),
+          throwsFormatException,
+        );
+        expect((await hostRepository.getAll()).single.label, 'Keep');
+        expect(await db.select(db.groups).get(), isEmpty);
+        expect(await db.select(db.snippetFolders).get(), isEmpty);
+      });
+    }
+  }
+
   group('SecureTransferService', () {
     test(
       'imports a public-only key payload without inventing a private key',

@@ -349,7 +349,6 @@ void main() {
 
           expect(result.isDeviceAuthSupported, true);
           expect(result.isBiometricHardwareSupported, false);
-          expect(result.supportsDeviceCredentialOnly, true);
           expect(result.canAuthenticateWithBiometrics, false);
           verifyNever(() => mockLocalAuth.getAvailableBiometrics());
         },

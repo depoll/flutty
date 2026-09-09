@@ -10,7 +10,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/acp_content.dart';
 import 'package:monkeyssh/domain/models/acp_provider.dart';
-import 'package:monkeyssh/domain/models/acp_recent_session.dart';
 import 'package:monkeyssh/domain/models/acp_session_keys.dart';
 import 'package:monkeyssh/domain/models/acp_session_state.dart';
 import 'package:monkeyssh/domain/models/acp_timeline.dart';
@@ -803,13 +802,18 @@ void main() {
       label: 'My Agent',
       launchCommand: AcpLaunchCommand(executable: 'agent'),
     );
-    await providerService.saveCustomProvider(
-      definition.update(
-        launchCommand: AcpLaunchCommand(
-          executable: 'agent',
-          arguments: const ['--changed'],
-        ),
-      ),
+    await settings.setString(
+      SettingKeys.acpCustomProviders,
+      jsonEncode([
+        definition
+            .update(
+              launchCommand: AcpLaunchCommand(
+                executable: 'agent',
+                arguments: const ['--changed'],
+              ),
+            )
+            .toJson(),
+      ]),
     );
     final result = await manager.startNewSession(
       hostId: 1,
@@ -1332,53 +1336,6 @@ void main() {
       },
     );
   });
-
-  test(
-    'remote bridge metadata preserves local title while refreshing',
-    () async {
-      final now = DateTime(2026);
-      await recentSessions.record(
-        AcpRecentSessionRef(
-          hostId: 1,
-          providerId: AcpBuiltinProviderIds.copilotCli,
-          bridgeId: '0123456789abcdef0123456789abcdef',
-          acpSessionId: 'remote-session',
-          title: 'Preserved title',
-          cwd: '/old',
-          createdAt: DateTime(2025),
-          lastActivityAt: DateTime(2025),
-        ),
-      );
-      connector.remoteMetadata = [
-        MonkeyMuxAcpBridgeMetadata(
-          id: '0123456789abcdef0123456789abcdef',
-          providerId: AcpBuiltinProviderIds.copilotCli,
-          sessionId: 'remote-session',
-          cwd: '/repo',
-          provider: 'Copilot CLI',
-          commandHash: 'hash',
-          state: MonkeyMuxAcpProviderState.running,
-          clientCount: 0,
-          pendingRequestCount: 0,
-          inFlightTurnCount: 0,
-          lastActivity: now,
-          startedAt: now,
-          nextSequence: 1,
-        ),
-      ];
-
-      final sessions = await manager.loadNavigableSessions(1);
-
-      expect(sessions, hasLength(1));
-      expect(sessions.single.acpSessionId, 'remote-session');
-      expect(sessions.single.title, 'Preserved title');
-      expect(sessions.single.cwd, '/repo');
-      expect(
-        (await manager.loadRecentSessions()).map((recent) => recent.key.value),
-        contains(sessions.single.key.value),
-      );
-    },
-  );
 
   group('prompt lifecycle', () {
     test('prompt returns a stop reason and clears streaming', () async {

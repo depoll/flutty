@@ -1264,10 +1264,10 @@ func attachCommand(args []string) {
 	if flusher, ok := attachOut.(interface{ Flush() error }); ok {
 		_ = flusher.Flush()
 	}
+	restoreTerminal()
 	if copyErr != nil && !errors.Is(copyErr, io.EOF) {
 		fatal(copyErr)
 	}
-	restoreTerminal()
 	if !*quiet {
 		if _, err := queryRunningServerStatus(session); err == nil {
 			fmt.Fprintf(os.Stderr, "\r\nmonkeymux: detached from %s\r\n", session)
@@ -3142,6 +3142,44 @@ type antigravityHistoryEntry struct {
 	updatedAt      time.Time
 }
 
+func assignAgentSessionsByWorkspace(
+	restore *serverRestore,
+	processes map[int]processInfo,
+	panePids map[int]struct{},
+	provider string,
+	sessionIDForWorkspace func(string, time.Time) string,
+) map[int]string {
+	workspaceCounts := map[string]int{}
+	for _, window := range restore.Windows {
+		if agentToolForRestore(window) == provider {
+			workspaceCounts[normalizedAgentWorkspacePath(window.Cwd)]++
+		}
+	}
+	sessions := map[int]string{}
+	liveProcesses := agentProcessesByPane(processes, panePids, provider)
+	for i, window := range restore.Windows {
+		if agentToolForRestore(window) != provider {
+			continue
+		}
+		workspace := normalizedAgentWorkspacePath(window.Cwd)
+		if workspace == "" || workspaceCounts[workspace] != 1 {
+			continue
+		}
+		process, ok := liveProcesses[window.PanePid]
+		if !ok {
+			continue
+		}
+		processStarted := processStartedAtForMetadata(process.pid)
+		if sessionID := sessionIDForWorkspace(
+			workspace,
+			processStarted,
+		); sessionID != "" {
+			sessions[i] = sessionID
+		}
+	}
+	return sessions
+}
+
 func discoverAntigravitySessionIDs(
 	restore *serverRestore,
 	processes map[int]processInfo,
@@ -3151,36 +3189,10 @@ func discoverAntigravitySessionIDs(
 	if len(entries) == 0 {
 		return nil
 	}
-	workspaceCounts := map[string]int{}
-	for _, window := range restore.Windows {
-		if agentToolForRestore(window) == "antigravity" {
-			workspaceCounts[normalizedAntigravityWorkspacePath(window.Cwd)]++
-		}
-	}
-	sessions := map[int]string{}
-	liveProcesses := agentProcessesByPane(processes, panePids, "antigravity")
-	for i, window := range restore.Windows {
-		if agentToolForRestore(window) != "antigravity" {
-			continue
-		}
-		workspace := normalizedAntigravityWorkspacePath(window.Cwd)
-		if workspace == "" || workspaceCounts[workspace] != 1 {
-			continue
-		}
-		process, ok := liveProcesses[window.PanePid]
-		if !ok {
-			continue
-		}
-		processStarted := processStartedAtForMetadata(process.pid)
-		if sessionID := antigravitySessionIDForWorkspace(
-			entries,
-			workspace,
-			processStarted,
-		); sessionID != "" {
-			sessions[i] = sessionID
-		}
-	}
-	return sessions
+	return assignAgentSessionsByWorkspace(restore, processes, panePids, "antigravity",
+		func(workspace string, started time.Time) string {
+			return antigravitySessionIDForWorkspace(entries, workspace, started)
+		})
 }
 
 func readAntigravityHistoryEntries() []antigravityHistoryEntry {
@@ -3212,7 +3224,7 @@ func readAntigravityHistoryEntries() []antigravityHistoryEntry {
 		}
 		entries = append(entries, antigravityHistoryEntry{
 			conversationID: sessionID,
-			workspace:      normalizedAntigravityWorkspacePath(raw.Workspace),
+			workspace:      normalizedAgentWorkspacePath(raw.Workspace),
 			updatedAt:      unixDatabaseTime(strconv.FormatInt(raw.Timestamp, 10)),
 		})
 	}
@@ -3224,7 +3236,7 @@ func antigravitySessionIDForWorkspace(
 	workspace string,
 	processStarted time.Time,
 ) string {
-	normalizedWorkspace := normalizedAntigravityWorkspacePath(workspace)
+	normalizedWorkspace := normalizedAgentWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
@@ -3237,7 +3249,7 @@ func antigravitySessionIDForWorkspace(
 	return ""
 }
 
-func normalizedAntigravityWorkspacePath(value string) string {
+func normalizedAgentWorkspacePath(value string) string {
 	workspace := strings.TrimSpace(value)
 	if workspace == "" {
 		return ""
@@ -3274,36 +3286,10 @@ func discoverCursorSessionIDs(
 	if len(entries) == 0 {
 		return nil
 	}
-	workspaceCounts := map[string]int{}
-	for _, window := range restore.Windows {
-		if agentToolForRestore(window) == "cursor-agent" {
-			workspaceCounts[normalizedCursorWorkspacePath(window.Cwd)]++
-		}
-	}
-	sessions := map[int]string{}
-	liveProcesses := agentProcessesByPane(processes, panePids, "cursor-agent")
-	for i, window := range restore.Windows {
-		if agentToolForRestore(window) != "cursor-agent" {
-			continue
-		}
-		workspace := normalizedCursorWorkspacePath(window.Cwd)
-		if workspace == "" || workspaceCounts[workspace] != 1 {
-			continue
-		}
-		process, ok := liveProcesses[window.PanePid]
-		if !ok {
-			continue
-		}
-		processStarted := processStartedAtForMetadata(process.pid)
-		if sessionID := cursorSessionIDForWorkspace(
-			entries,
-			workspace,
-			processStarted,
-		); sessionID != "" {
-			sessions[i] = sessionID
-		}
-	}
-	return sessions
+	return assignAgentSessionsByWorkspace(restore, processes, panePids, "cursor-agent",
+		func(workspace string, started time.Time) string {
+			return cursorSessionIDForWorkspace(entries, workspace, started)
+		})
 }
 
 // readCursorChatEntries reads recent Cursor chat metadata, ordered oldest to
@@ -3374,7 +3360,7 @@ func readCursorChatMeta(path string, chatID string) (cursorChatEntry, bool) {
 	}
 	return cursorChatEntry{
 		chatID:    sessionID,
-		cwd:       normalizedCursorWorkspacePath(raw.Cwd),
+		cwd:       normalizedAgentWorkspacePath(raw.Cwd),
 		updatedAt: updatedAt,
 	}, true
 }
@@ -3384,7 +3370,7 @@ func cursorSessionIDForWorkspace(
 	workspace string,
 	processStarted time.Time,
 ) string {
-	normalizedWorkspace := normalizedCursorWorkspacePath(workspace)
+	normalizedWorkspace := normalizedAgentWorkspacePath(workspace)
 	if normalizedWorkspace == "" {
 		return ""
 	}
@@ -3396,22 +3382,6 @@ func cursorSessionIDForWorkspace(
 		}
 	}
 	return ""
-}
-
-func normalizedCursorWorkspacePath(value string) string {
-	workspace := strings.TrimSpace(value)
-	if workspace == "" {
-		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(workspace), "file://") {
-		if path := pathFromOsc7(workspace); path != "" {
-			workspace = path
-		}
-	}
-	if expanded, err := expandHomePath(workspace); err == nil {
-		workspace = expanded
-	}
-	return filepath.Clean(workspace)
 }
 
 // piSessionEntry is the resumable metadata stored in a primary Pi JSONL file.
@@ -3546,7 +3516,7 @@ func discoverPiSessions(
 			}
 			processStarts[i] = processStartedAtForMetadata(process.pid)
 		}
-		cwd := normalizedPiWorkingDirectory(window.Cwd)
+		cwd := normalizedWorkingDirectory(window.Cwd)
 		if cwd == "" {
 			continue
 		}
@@ -4287,7 +4257,7 @@ func piSessionRootForWorkingDirectory(cwd string) string {
 		agentDirectory = normalizedPiSessionDirectory(agentDirectory, cwd)
 	}
 	setting := readPiSessionDirectorySetting(filepath.Join(agentDirectory, "settings.json"))
-	projectDirectory := normalizedPiWorkingDirectory(cwd)
+	projectDirectory := normalizedWorkingDirectory(cwd)
 	if projectDirectory != "" {
 		if projectSetting := readPiSessionDirectorySetting(filepath.Join(projectDirectory, ".pi", "settings.json")); projectSetting != "" {
 			setting = projectSetting
@@ -4335,7 +4305,7 @@ func normalizedPiSessionDirectory(path string, cwd string) string {
 		trimmed = expanded
 	}
 	if !filepath.IsAbs(trimmed) {
-		base := normalizedPiWorkingDirectory(cwd)
+		base := normalizedWorkingDirectory(cwd)
 		if base == "" {
 			if absolute, err := filepath.Abs(trimmed); err == nil {
 				return filepath.Clean(absolute)
@@ -4384,7 +4354,7 @@ func readPiSessionEntry(path string) (piSessionEntry, bool) {
 		entry := piSessionEntry{
 			sessionID: strings.TrimSpace(metadata.ID),
 			rawCwd:    filepath.Clean(strings.TrimSpace(metadata.Cwd)),
-			cwd:       normalizedPiWorkingDirectory(metadata.Cwd),
+			cwd:       normalizedWorkingDirectory(metadata.Cwd),
 			path:      filepath.Clean(path),
 			modTime:   info.ModTime(),
 		}
@@ -4480,7 +4450,7 @@ func piLatestSessionName(path string) (string, bool) {
 // colon replaced by "-", wrapped in "--". A deleted origin file's bucket name
 // therefore still identifies the working directory it was created in.
 func piEncodedSessionDirName(cwd string) string {
-	resolved := normalizedPiWorkingDirectory(cwd)
+	resolved := normalizedWorkingDirectory(cwd)
 	if resolved == "" {
 		return ""
 	}
@@ -4559,21 +4529,6 @@ func annotatePiSessionOrigins(entries []piSessionEntry) {
 	}
 }
 
-func normalizedPiWorkingDirectory(path string) string {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" {
-		return ""
-	}
-	if expanded, err := expandHomePath(trimmed); err == nil {
-		trimmed = expanded
-	}
-	cleaned := filepath.Clean(trimmed)
-	if resolved, err := filepath.EvalSymlinks(cleaned); err == nil {
-		return resolved
-	}
-	return cleaned
-}
-
 func agentToolCandidateForRestore(window restoreWindowState) string {
 	// Explicit metadata is authoritative, including confirmed plain shells.
 	// Do not replace a retired tool with one guessed from a window's label.
@@ -4617,6 +4572,17 @@ var commandProcessTableCache processTableCache
 var processOpenFilePathsForMetadata = defaultProcessOpenFilePathsForMetadata
 
 var processWorkingDirectoryForMetadata = defaultProcessWorkingDirectoryForMetadata
+
+func commandNameForPID(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	table := cachedProcessTable(time.Now())
+	if info, ok := table[pid]; ok {
+		return commandNameFromProcessFields(info.comm, info.args)
+	}
+	return ""
+}
 
 func cachedProcessTable(now time.Time) map[int]processInfo {
 	commandProcessTableCache.mu.Lock()
@@ -4766,7 +4732,7 @@ func copilotSessionWorkingDirectory(eventsPath string) string {
 				} `json:"data"`
 			}
 			if json.Unmarshal([]byte(line), &raw) == nil {
-				if cwd := normalizedCopilotWorkingDirectory(raw.Data.Context.Cwd); cwd != "" {
+				if cwd := normalizedWorkingDirectory(raw.Data.Context.Cwd); cwd != "" {
 					return cwd
 				}
 			}
@@ -4778,10 +4744,10 @@ func copilotSessionWorkingDirectory(eventsPath string) string {
 	return ""
 }
 
-// normalizedCopilotWorkingDirectory canonicalizes a working directory so a
+// normalizedWorkingDirectory canonicalizes a working directory so a
 // window's cwd and a session's recorded cwd compare equal despite ~ expansion
 // or symlinks (for example /tmp vs /private/tmp on macOS).
-func normalizedCopilotWorkingDirectory(path string) string {
+func normalizedWorkingDirectory(path string) string {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return ""
@@ -4830,7 +4796,7 @@ func assignCopilotSessionsByWorkingDirectory(
 		if !ok {
 			continue
 		}
-		workingDirectory := normalizedCopilotWorkingDirectory(restore.Windows[i].Cwd)
+		workingDirectory := normalizedWorkingDirectory(restore.Windows[i].Cwd)
 		if workingDirectory == "" {
 			continue
 		}
@@ -11321,10 +11287,6 @@ func (s *muxServer) restorePendingTerminalQueries(
 	window.pendingTerminalQueries = restored
 }
 
-func (s *muxServer) writeActive(data []byte) {
-	_ = s.writeWindow(s.activeWindowID(), data)
-}
-
 func (s *muxServer) handleAttachInputSerialized(
 	client *attachClient,
 	data []byte,
@@ -11930,12 +11892,6 @@ func isWin32InputModeRequestPrefix(rest []byte) bool {
 		}
 	}
 	return false
-}
-
-func (s *muxServer) activeWindow() *muxWindow {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.windowByIDLocked(s.activeID)
 }
 
 func (s *muxServer) activeWindowID() string {
@@ -12638,11 +12594,6 @@ func (p terminalOutputParserSnapshot) isGround() bool {
 	return p.state == terminalOutputParserGround && p.utf8Remaining == 0
 }
 
-func (w *muxWindow) resetTerminalOutputParserLocked() {
-	w.terminalOutputState = terminalOutputParserGround
-	w.terminalOutputBytes = 0
-}
-
 func (w *muxWindow) terminalOutputIsGroundLocked() bool {
 	return terminalOutputParserSnapshot{
 		state:         w.terminalOutputState,
@@ -12831,27 +12782,6 @@ func stripTerminalQueriesFromReplay(data []byte) []byte {
 	}
 	output = append(output, data[copyStart:]...)
 	return output
-}
-
-func terminalQueriesFromData(data []byte) []byte {
-	var queries []byte
-	for index := 0; index < len(data); {
-		sequenceEnd, isQuery, incomplete, recognized :=
-			terminalQuerySequenceAt(data, index)
-		if incomplete {
-			break
-		}
-		if !recognized {
-			index++
-			continue
-		}
-		if isQuery &&
-			len(queries)+(sequenceEnd-index) <= pendingTerminalQueryLimitBytes {
-			queries = append(queries, data[index:sequenceEnd]...)
-		}
-		index = sequenceEnd
-	}
-	return queries
 }
 
 func terminalQueryResponseCount(data []byte) int {
@@ -15029,13 +14959,6 @@ func (w *muxWindow) refreshCursorSessionMetadataLocked(processID int) {
 	}
 	w.agentSessionID = sessionID
 	w.agentSessionIdentityExact = true
-}
-
-func (w *muxWindow) supportsThemeHintLocked() bool {
-	return w.themeHintFocusTransitionLocked() ||
-		w.themeHintModeReportLocked() ||
-		len(w.themeHintRefreshKeysLocked()) > 0 ||
-		len(w.agentThemeHintRefreshKeysLocked()) > 0
 }
 
 // themeHintRefreshKeysLocked returns the OSC theme-query keys the daemon

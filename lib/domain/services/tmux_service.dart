@@ -9,7 +9,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
+import 'command_output_marker_reader.dart';
 import 'diagnostics_log_service.dart';
+import 'remote_file_service.dart' show shellEscapePosix;
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 import 'windows_remote_powershell.dart';
@@ -140,9 +142,6 @@ class TmuxService {
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
   static const _activeAgentSessionMetadataFreshTtl = Duration(seconds: 5);
-  static final RegExp _execDoneMarkerLinePattern = RegExp(
-    '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
-  );
 
   static String _tmuxCommand(
     String command, {
@@ -165,8 +164,8 @@ class TmuxService {
       final output = await _execTmuxCommand(
         session,
         sessionName,
-        'display-message -p -t ${_shellQuote('$sessionName:')} '
-        '${_shellQuote('#{version}')}',
+        'display-message -p -t ${shellEscapePosix('$sessionName:')} '
+        '${shellEscapePosix('#{version}')}',
         extraFlags: extraFlags,
         priority: SshExecPriority.low,
       );
@@ -421,44 +420,6 @@ class TmuxService {
     return sessionName;
   }
 
-  /// Returns `true` if tmux is installed on the remote host.
-  Future<bool> isTmuxInstalled(SshSession session) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.detect',
-      'installed_check_start',
-      fields: {'connectionId': session.connectionId},
-    );
-    try {
-      final cachedTmuxPath = _tmuxPathCache[session.connectionId];
-      if (cachedTmuxPath != null && cachedTmuxPath.isNotEmpty) {
-        DiagnosticsLogService.instance.info(
-          'tmux.detect',
-          'installed_check_cached',
-          fields: {'connectionId': session.connectionId},
-        );
-        return true;
-      }
-      final output = await _exec(session, 'which tmux');
-      final installed = output.trim().isNotEmpty;
-      DiagnosticsLogService.instance.info(
-        'tmux.detect',
-        'installed_check_complete',
-        fields: {'connectionId': session.connectionId, 'installed': installed},
-      );
-      return installed;
-    } on Exception catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'tmux.detect',
-        'installed_check_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-      return false;
-    }
-  }
-
   /// Detects which supported coding-agent CLIs are available on the
   /// remote host's `PATH`.
   ///
@@ -606,47 +567,6 @@ class TmuxService {
     return request;
   }
 
-  /// Lists all tmux sessions on the remote host.
-  Future<List<TmuxSession>> listSessions(
-    SshSession session, {
-    String? extraFlags,
-  }) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.query',
-      'list_sessions_start',
-      fields: {'connectionId': session.connectionId},
-    );
-    try {
-      final output = await _exec(
-        session,
-        _tmuxCommand(
-          "list-sessions -F '#{session_name}|#{session_windows}|#{session_attached}|#{session_activity}'",
-          extraFlags: extraFlags,
-        ),
-      );
-      final sessions = _parseLines(output, TmuxSession.fromTmuxFormat);
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'list_sessions_complete',
-        fields: {
-          'connectionId': session.connectionId,
-          'sessionCount': sessions.length,
-        },
-      );
-      return sessions;
-    } on Exception catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'tmux.query',
-        'list_sessions_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-      return const [];
-    }
-  }
-
   /// Returns the name of the tmux session attached to this terminal.
   ///
   /// This does not infer a session from arbitrary attached tmux clients on the
@@ -761,7 +681,7 @@ class TmuxService {
     await _cacheTmuxPath(session);
     final output = await _exec(
       session,
-      '${_tmuxCommand('has-session -t ${_shellQuote(sessionName)}', extraFlags: extraFlags)} 2>/dev/null; '
+      '${_tmuxCommand('has-session -t ${shellEscapePosix(sessionName)}', extraFlags: extraFlags)} 2>/dev/null; '
       r'status=$?; '
       r'if [ "$status" -eq 0 ]; then printf 1; '
       r'elif [ "$status" -eq 1 ]; then printf 0; '
@@ -839,11 +759,11 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
-    final quotedName = _shellQuote(sessionName);
+    final quotedName = shellEscapePosix(sessionName);
     final output = await _execTmuxCommand(
       session,
       sessionName,
-      'list-panes -s -t $quotedName -F ${_shellQuote('#{pane_pid}')}',
+      'list-panes -s -t $quotedName -F ${shellEscapePosix('#{pane_pid}')}',
       extraFlags: extraFlags,
       forceUtf8: true,
     );
@@ -860,13 +780,13 @@ class TmuxService {
       'list_windows_start',
       fields: {'connectionId': session.connectionId},
     );
-    final quotedName = _shellQuote(sessionName);
+    final quotedName = shellEscapePosix(sessionName);
     try {
       final output = await _execTmuxCommand(
         session,
         sessionName,
         'list-windows -t $quotedName -F '
-        '${_shellQuote(_tmuxWindowSubscriptionFormat)}',
+        '${shellEscapePosix(_tmuxWindowSubscriptionFormat)}',
         extraFlags: extraFlags,
         forceUtf8: true,
       );
@@ -1450,8 +1370,8 @@ class TmuxService {
       final output = await _execTmuxCommand(
         session,
         sessionName,
-        'display-message -p -t ${_shellQuote('$sessionName:')} '
-        '${_shellQuote('#{pane_current_path}$tmuxWindowFieldSeparator#{pane_current_command}')}',
+        'display-message -p -t ${shellEscapePosix('$sessionName:')} '
+        '${shellEscapePosix('#{pane_current_path}$tmuxWindowFieldSeparator#{pane_current_command}')}',
         extraFlags: extraFlags,
         priority: priority,
       );
@@ -1617,8 +1537,8 @@ class TmuxService {
     final listOutput = await _tryControlCommand(
       session,
       sessionName,
-      'list-clients -t ${_shellQuote(sessionName)} -F '
-      '${_shellQuote('#{client_control_mode}$tmuxWindowFieldSeparator#{client_name}')}',
+      'list-clients -t ${shellEscapePosix(sessionName)} -F '
+      '${shellEscapePosix('#{client_control_mode}$tmuxWindowFieldSeparator#{client_name}')}',
       extraFlags: extraFlags,
     );
     if (listOutput == null) {
@@ -1629,7 +1549,7 @@ class TmuxService {
       final refreshOutput = await _tryControlCommand(
         session,
         sessionName,
-        'refresh-client -t ${_shellQuote(clientName)}',
+        'refresh-client -t ${shellEscapePosix(clientName)}',
         extraFlags: extraFlags,
       );
       if (refreshOutput == null) {
@@ -1755,11 +1675,11 @@ class TmuxService {
     // (e.g. resuming an AI session in a specific project). Without -c,
     // tmux uses the session's default-directory — matching Ctrl+b,c.
     final parts = <String>[
-      "new-window -P -F '#{window_index}' -t ${_shellQuote(sessionName)}",
+      "new-window -P -F '#{window_index}' -t ${shellEscapePosix(sessionName)}",
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
-        '-c ${_shellQuote(workingDirectory.trim())}',
+        '-c ${shellEscapePosix(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
-        '-n ${_shellQuote(name.trim())}',
+        '-n ${shellEscapePosix(name.trim())}',
     ];
     final createdWindowIndex = _parseCreatedWindowIndex(
       await _execTmuxCommand(
@@ -1779,13 +1699,13 @@ class TmuxService {
         tool: agentTool,
       );
       final optionCommands = <String>[
-        'set-option -w -t ${_shellQuote(target)} @flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+        'set-option -w -t ${shellEscapePosix(target)} @flutty_agent_tool ${shellEscapePosix(agentTool.commandName)}',
         if (agentSessionId != null)
-          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_id ${_shellQuote(agentSessionId)}',
+          'set-option -w -t ${shellEscapePosix(target)} @flutty_agent_session_id ${shellEscapePosix(agentSessionId)}',
         if (agentSessionId != null)
-          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_confidence ${_shellQuote(AgentSessionConfidence.high.name)}',
+          'set-option -w -t ${shellEscapePosix(target)} @flutty_agent_session_confidence ${shellEscapePosix(AgentSessionConfidence.high.name)}',
         if (agentSessionId != null)
-          'set-option -w -t ${_shellQuote(target)} @flutty_agent_session_updated_at ${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+          'set-option -w -t ${shellEscapePosix(target)} @flutty_agent_session_updated_at ${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
       ];
       await _execTmuxCommand(
         session,
@@ -1810,8 +1730,8 @@ class TmuxService {
       _execTmuxCommandFireAndForget(
         session,
         sessionName,
-        'send-keys -t ${_shellQuote(target)} '
-        '${_shellQuote(command.trim())} Enter',
+        'send-keys -t ${shellEscapePosix(target)} '
+        '${shellEscapePosix(command.trim())} Enter',
         extraFlags: extraFlags,
       );
       DiagnosticsLogService.instance.info(
@@ -1845,8 +1765,8 @@ class TmuxService {
         : null;
     final hasTargetWindowId = safeWindowId != null;
     final target = safeWindowId == null
-        ? '${_shellQuote(sessionName)}:$windowIndex'
-        : _shellQuote(safeWindowId);
+        ? '${shellEscapePosix(sessionName)}:$windowIndex'
+        : shellEscapePosix(safeWindowId);
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'select_window_start',
@@ -1891,7 +1811,7 @@ class TmuxService {
     await _execTmuxCommand(
       session,
       sessionName,
-      'kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
+      'kill-window -t ${shellEscapePosix(sessionName)}:$windowIndex',
       extraFlags: extraFlags,
     );
     DiagnosticsLogService.instance.info(
@@ -2272,7 +2192,7 @@ class TmuxService {
 
   String _markCommandDone(String command) =>
       '{ $command; __flutty_tmux_exec_status__=\$?; '
-      'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
+      'printf ${shellEscapePosix('\n$_execDoneMarker:%s\n')} '
       r'"$__flutty_tmux_exec_status__"; }';
 
   Future<String> _readStdoutUntilDoneMarker(
@@ -2280,56 +2200,46 @@ class TmuxService {
     required int connectionId,
     required String commandKind,
   }) async {
-    final output = StringBuffer();
-    await for (final chunk
-        in execSession.stdout
+    ({String output, int? status}) result;
+    try {
+      result = await readCommandOutputUntilMarker(
+        execSession.stdout
             .cast<List<int>>()
             .transform(utf8.decoder)
-            .timeout(_execOutputTimeout)) {
-      DiagnosticsLogService.instance.debug(
-        'tmux.exec',
-        'stdout_chunk',
-        fields: {
-          'connectionId': connectionId,
-          'commandKind': commandKind,
-          'charCount': chunk.length,
-        },
-      );
-      output.write(chunk);
-      final currentOutput = output.toString();
-      RegExpMatch? markerMatch;
-      for (final match in _execDoneMarkerLinePattern.allMatches(
-        currentOutput,
-      )) {
-        markerMatch = match;
-      }
-      if (markerMatch != null) {
-        final statusText = markerMatch.group(1)!;
-        final exitStatus = int.parse(statusText);
-        if (exitStatus != 0) {
-          DiagnosticsLogService.instance.warning(
+            .timeout(_execOutputTimeout),
+        _execDoneMarker,
+        // Observe chunks without wrapping stdout in another stream whose
+        // cancellation can delay EOF and keep the queued exec slot occupied.
+        onChunk: (chunk) {
+          DiagnosticsLogService.instance.debug(
             'tmux.exec',
-            'nonzero_status',
+            'stdout_chunk',
             fields: {
               'connectionId': connectionId,
               'commandKind': commandKind,
-              'exitStatus': exitStatus,
+              'charCount': chunk.length,
             },
           );
-          throw TmuxCommandException(
-            'tmux command failed with exit status $statusText',
-          );
-        }
-        return currentOutput.substring(0, markerMatch.start).trimRight();
-      }
+        },
+      );
+    } on CommandOutputMarkerMissingException {
+      result = (output: '', status: null);
     }
+    final status = result.status;
+    if (status == 0) return result.output.trimRight();
     DiagnosticsLogService.instance.warning(
       'tmux.exec',
-      'closed_before_marker',
-      fields: {'connectionId': connectionId, 'commandKind': commandKind},
+      status == null ? 'closed_before_marker' : 'nonzero_status',
+      fields: {
+        'connectionId': connectionId,
+        'commandKind': commandKind,
+        'exitStatus': ?status,
+      },
     );
-    throw const TmuxCommandException(
-      'SSH exec channel closed before tmux command completed',
+    throw TmuxCommandException(
+      status == null
+          ? 'SSH exec channel closed before tmux command completed'
+          : 'tmux command failed with exit status $status',
     );
   }
 
@@ -2516,10 +2426,6 @@ class TmuxService {
     }
     return results;
   }
-
-  /// Single-quotes a value for safe use in shell commands.
-  static String _shellQuote(String value) =>
-      "'${value.replaceAll("'", "'\"'\"'")}'";
 }
 
 int? _parseCreatedWindowIndex(String output) {
@@ -2778,11 +2684,6 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
       'fi';
 }
 
-/// Parses the current pane path reported by `tmux display-message`.
-@visibleForTesting
-String? parseTmuxCurrentPanePath(String output) =>
-    parseTmuxCurrentPaneContext(output)?.currentPath;
-
 /// Parses current pane metadata reported by `tmux display-message`.
 @visibleForTesting
 TmuxPaneContext? parseTmuxCurrentPaneContext(String output) {
@@ -2821,7 +2722,7 @@ String buildTmuxRefreshForegroundClientsCommand(
 }) {
   const sep = r'${SEP}';
   final listClients = TmuxService._tmuxCommand(
-    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    'list-clients -t ${shellEscapePosix(sessionName)} -F ',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
@@ -2850,7 +2751,7 @@ String buildTmuxRefreshTerminalThemeCommand(
 }) {
   const sep = r'${SEP}';
   final listPanes = TmuxService._tmuxCommand(
-    'list-panes -s -t ${TmuxService._shellQuote(sessionName)} -F ',
+    'list-panes -s -t ${shellEscapePosix(sessionName)} -F ',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
@@ -3009,9 +2910,9 @@ String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
     throw ArgumentError.value(index, 'index', 'Expected ANSI color index 0-15');
   }
   final hexColor = formatTerminalThemeRgbHex(color);
-  final optionName = TmuxService._shellQuote('pane-colours[$index]');
+  final optionName = shellEscapePosix('pane-colours[$index]');
   return r'set-option -p -t "$pane" '
-      '$optionName ${TmuxService._shellQuote(hexColor)}';
+      '$optionName ${shellEscapePosix(hexColor)}';
 }
 
 String _buildTmuxLoadThemeReportClientsCommand(
@@ -3020,7 +2921,7 @@ String _buildTmuxLoadThemeReportClientsCommand(
 }) {
   const sep = r'${SEP}';
   final listClients = TmuxService._tmuxCommand(
-    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    'list-clients -t ${shellEscapePosix(sessionName)} -F ',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
@@ -3050,7 +2951,7 @@ String _buildTmuxProvideClientThemeReportsCommand(
       .map((report) {
         final reportCommand = TmuxService._tmuxCommand(
           '${r'refresh-client -t "$client" -r "$pane":'}'
-          '${TmuxService._shellQuote(report)}',
+          '${shellEscapePosix(report)}',
           extraFlags: extraFlags,
           forceUtf8: true,
         );
@@ -3100,18 +3001,6 @@ String _formatTmuxSendKeysHexArgument(int codeUnit) {
   return codeUnit.toRadixString(16).padLeft(2, '0');
 }
 
-/// Returns whether `tmux list-clients` output includes a non-control client.
-@visibleForTesting
-bool hasForegroundTmuxClient(String output) {
-  for (final rawLine in output.split('\n')) {
-    final line = rawLine.trim();
-    if (line == '0') {
-      return true;
-    }
-  }
-  return false;
-}
-
 /// Extracts only tmux client/server flags that can be reused with commands
 /// other than `new-session`.
 @visibleForTesting
@@ -3158,9 +3047,9 @@ String _shellQuoteReusableTmuxClientFlagValue(String value) {
     return r'"$HOME"';
   }
   if (value.startsWith('~/')) {
-    return r'"$HOME"' + TmuxService._shellQuote(value.substring(1));
+    return r'"$HOME"' + shellEscapePosix(value.substring(1));
   }
-  return TmuxService._shellQuote(value);
+  return shellEscapePosix(value);
 }
 
 List<_ShellToken>? _tokenizeShellFragment(String? value) {
@@ -3318,7 +3207,7 @@ String buildTmuxControlModeAttachCommand(
   String? extraFlags,
 }) =>
     '${TmuxService._tmuxCommand('-CC attach-session -f $_tmuxControlModeClientFlags', extraFlags: extraFlags)} '
-    '-t ${TmuxService._shellQuote(sessionName)}';
+    '-t ${shellEscapePosix(sessionName)}';
 
 /// Builds the tmux control-mode subscription command for window snapshots.
 @visibleForTesting
@@ -4344,7 +4233,7 @@ String buildAgentActiveSessionMetadataCommand(Set<int> panePids) {
   return '''
 sep=\$(printf "\\037")
 unsetopt nomatch 2>/dev/null || true
-pane_pids=${TmuxService._shellQuote(panePidText)}
+pane_pids=${shellEscapePosix(panePidText)}
 home=\${HOME:-}
 if [ -z "\$home" ]; then
   home=~

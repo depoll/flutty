@@ -25,6 +25,8 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../test/helpers/live_ssh_terminal_helpers.dart';
+
 const _sshPort = int.fromEnvironment('CODEX_THEME_SSH_PORT');
 const _sshUser = String.fromEnvironment('CODEX_THEME_SSH_USER');
 const _sshPrivateKeyBase64 = String.fromEnvironment('CODEX_THEME_SSH_KEY_B64');
@@ -158,20 +160,23 @@ void main() {
       ),
     );
 
-    await _pumpUntilConnected(tester);
-    await _pumpUntilFound(tester, find.byType(MonkeyTerminalView));
-
-    var terminal = _terminalFromView(tester);
-    await _waitForTerminalText(
+    await pumpUntilConnected(
       tester,
-      () => _terminalFromView(tester),
+      description: 'SSH connection to validation host',
+    );
+    await pumpUntilFound(tester, find.byType(MonkeyTerminalView));
+
+    var terminal = terminalFromView(tester);
+    await waitForTerminalText(
+      tester,
+      () => terminalFromView(tester),
       'Codex',
       description: 'Timed out waiting for Codex to render in tmux',
       timeout: const Duration(seconds: 90),
     );
-    await _pumpUntil(
+    await pumpUntil(
       tester,
-      () => _terminalFromView(tester).reportFocusMode,
+      () => terminalFromView(tester).reportFocusMode,
       description: 'Codex/tmux did not request terminal focus reports',
     );
     await binding.takeScreenshot('codex-clean-white-before-theme-change');
@@ -181,16 +186,16 @@ void main() {
         .toRadixString(36);
 
     await _switchThemeMode(tester, themeMode, ThemeMode.dark);
-    terminal = _terminalFromView(tester);
+    terminal = terminalFromView(tester);
     final darkToken = 'd$tokenSuffix';
     terminal.textInput(darkToken);
-    await _waitForTerminalText(
+    await waitForTerminalText(
       tester,
-      () => _terminalFromView(tester),
+      () => terminalFromView(tester),
       darkToken,
       description: 'Timed out waiting for dark-theme Codex input token',
     );
-    terminal = _terminalFromView(tester);
+    terminal = terminalFromView(tester);
     final darkContrast = _minimumTokenContrast(
       terminal,
       monkey_themes.TerminalThemes.defaultDarkTheme,
@@ -207,16 +212,16 @@ void main() {
     await binding.takeScreenshot('codex-default-dark-readable');
 
     await _switchThemeMode(tester, themeMode, ThemeMode.light);
-    terminal = _terminalFromView(tester);
+    terminal = terminalFromView(tester);
     final lightToken = '-l$tokenSuffix';
     terminal.textInput(lightToken);
-    await _waitForTerminalText(
+    await waitForTerminalText(
       tester,
-      () => _terminalFromView(tester),
+      () => terminalFromView(tester),
       lightToken,
       description: 'Timed out waiting for light-theme Codex input token',
     );
-    terminal = _terminalFromView(tester);
+    terminal = terminalFromView(tester);
     final lightContrast = _minimumTokenContrast(
       terminal,
       monkey_themes.TerminalThemes.defaultLightTheme,
@@ -234,17 +239,6 @@ void main() {
   });
 }
 
-Future<void> _pumpUntilConnected(WidgetTester tester) async {
-  await _pumpUntil(
-    tester,
-    () => find.text('Connecting...').evaluate().isEmpty,
-    description: 'SSH connection to validation host',
-    timeout: const Duration(seconds: 60),
-  );
-  expect(find.textContaining('Failed to start shell'), findsNothing);
-  expect(find.textContaining('Connection failed'), findsNothing);
-}
-
 Future<void> _switchThemeMode(
   WidgetTester tester,
   ValueNotifier<ThemeMode> themeMode,
@@ -252,66 +246,6 @@ Future<void> _switchThemeMode(
 ) async {
   themeMode.value = mode;
   await tester.pumpAndSettle(const Duration(seconds: 1));
-}
-
-Terminal _terminalFromView(WidgetTester tester) =>
-    tester.widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView)).terminal;
-
-Future<void> _pumpUntilFound(
-  WidgetTester tester,
-  Finder finder, {
-  Duration timeout = const Duration(seconds: 30),
-}) async {
-  await _pumpUntil(
-    tester,
-    () => finder.evaluate().isNotEmpty,
-    description: 'finder $finder',
-    timeout: timeout,
-  );
-}
-
-Future<void> _pumpUntil(
-  WidgetTester tester,
-  bool Function() predicate, {
-  required String description,
-  Duration timeout = const Duration(seconds: 30),
-  Duration step = const Duration(milliseconds: 100),
-}) async {
-  final end = DateTime.now().add(timeout);
-  while (DateTime.now().isBefore(end)) {
-    await tester.pump(step);
-    if (predicate()) {
-      return;
-    }
-  }
-  fail('Timed out waiting for $description');
-}
-
-Future<void> _waitForTerminalText(
-  WidgetTester tester,
-  Terminal Function() terminal,
-  String expected, {
-  required String description,
-  Duration timeout = const Duration(seconds: 20),
-}) async {
-  await _pumpUntil(
-    tester,
-    () => _terminalBufferText(terminal()).contains(expected),
-    description: '$description\n${_terminalBufferText(terminal())}',
-    timeout: timeout,
-  );
-}
-
-String _terminalBufferText(Terminal terminal) {
-  final lines = <String>[];
-  for (var index = 0; index < terminal.buffer.lines.length; index += 1) {
-    lines.add(
-      terminal.buffer.lines[index]
-          .getText(0, terminal.buffer.viewWidth)
-          .trimRight(),
-    );
-  }
-  return lines.join('\n');
 }
 
 double _minimumTokenContrast(

@@ -29,7 +29,7 @@ void main() {
         buildTmuxControlModeAttachCommand('dev\'s session'),
         'tmux -CC attach-session -f '
         'ignore-size,no-output '
-        "-t 'dev'\"'\"'s session'",
+        r"-t 'dev'\''s session'",
       );
     });
 
@@ -110,7 +110,7 @@ void main() {
         buildTmuxRefreshForegroundClientsCommand("dev's session"),
         r'SEP=$(printf "\037"); '
         'tmux -u list-clients -t '
-        "'dev'\"'\"'s session' -F "
+        r"'dev'\''s session' -F "
         r'"#{client_control_mode}${SEP}#{client_name}" '
         '2>/dev/null | '
         r'while IFS="$SEP" read -r control client; do '
@@ -197,10 +197,7 @@ void main() {
         TerminalThemes.dracula,
       );
 
-      expect(
-        command,
-        contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
-      );
+      expect(command, contains(r"tmux -u list-panes -s -t 'dev'\''s session'"));
       expect(command, contains(r'set-option -p -t "$pane"'));
       expect(
         RegExp(r'tmux -u set-option -p -t "\$pane"').allMatches(command),
@@ -356,10 +353,7 @@ void main() {
         isNot(contains(r'send-keys -t "$pane" -H 1b 5b 3f 39 39 37')),
       );
       expect(command, isNot(contains(r'send-keys -t "$pane" -H 1b 5d')));
-      expect(
-        command,
-        contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
-      );
+      expect(command, contains(r"tmux -u list-clients -t 'dev'\''s session'"));
     });
 
     test('theme refresh command reuses tmux client flags', () {
@@ -1278,22 +1272,18 @@ void main() {
 
   group('tmux window action helpers', () {
     test('parses the current pane path from display-message output', () {
-      expect(parseTmuxCurrentPanePath('/tmp/project\n'), '/tmp/project');
       expect(
-        parseTmuxCurrentPanePath('\n  /tmp/workspace  \n'),
+        parseTmuxCurrentPaneContext('/tmp/project\n')?.currentPath,
+        '/tmp/project',
+      );
+      expect(
+        parseTmuxCurrentPaneContext('\n  /tmp/workspace  \n')?.currentPath,
         '/tmp/workspace',
       );
       final context = parseTmuxCurrentPaneContext('/tmp/project\x1fzsh\n');
       expect(context?.currentPath, '/tmp/project');
       expect(context?.currentCommand, 'zsh');
-      expect(parseTmuxCurrentPanePath(' \n \n'), isNull);
-    });
-
-    test('detects only non-control tmux clients as foreground clients', () {
-      expect(hasForegroundTmuxClient('1\n1\n'), isFalse);
-      expect(hasForegroundTmuxClient('1\n0\n'), isTrue);
-      expect(hasForegroundTmuxClient('\n0\n'), isTrue);
-      expect(hasForegroundTmuxClient(' \n \n'), isFalse);
+      expect(parseTmuxCurrentPaneContext(' \n \n')?.currentPath, isNull);
     });
 
     test(
@@ -1440,6 +1430,37 @@ void main() {
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
       verify(execSession.close).called(1);
     });
+
+    test(
+      'listWindows reads split markers and fragmented large output',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final title = 'x' * 100000;
+        final exec = _buildOpenExecSession();
+        final bytes = utf8.encode(
+          '1|editor|1|vim|/tmp|*|$title|1712930000\n${_doneMarker()}',
+        );
+        when(() => exec.stdout).thenAnswer(
+          (_) => Stream<Uint8List>.multi((controller) {
+            for (var offset = 0; offset < bytes.length; offset += 7) {
+              controller.add(
+                Uint8List.fromList(
+                  bytes.sublist(offset, (offset + 7).clamp(0, bytes.length)),
+                ),
+              );
+            }
+          }),
+        );
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => exec);
+        final windows = await service.listWindows(session, 'main');
+        expect(windows.single.paneTitle, title);
+        verify(exec.close).called(1);
+      },
+    );
 
     test('listWindows ignores done-marker text inside tmux fields', () async {
       final client = _MockSshClient();

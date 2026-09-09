@@ -7,7 +7,7 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/diagnostics_log_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
-import 'like_query.dart';
+import 'plaintext_cache.dart';
 
 /// Repository for managing host entities.
 class HostRepository {
@@ -16,14 +16,8 @@ class HostRepository {
 
   final AppDatabase _db;
   final SecretEncryptionService _secretEncryptionService;
+  late final _decryptCache = PlaintextCache(_secretEncryptionService);
 
-  static const _maxDecryptCacheEntries = 512;
-
-  // Ciphertext-keyed cache so repeated watchAll emissions only pay the
-  // AES-GCM cost for rows whose encrypted field actually changed.
-  // Keyed by the full ENCv1:… envelope string; value is the decrypted
-  // plaintext. Entries are bounded and cleared on auth lock / writes.
-  final _decryptCache = <String, String>{};
   final _undecryptablePasswordHostIds = <int>{};
 
   /// Clears cached decrypted secret plaintexts.
@@ -42,30 +36,6 @@ class HostRepository {
   /// Watch all hosts.
   Stream<List<Host>> watchAll() =>
       _orderedHostsQuery().watch().asyncMap(_decryptHosts);
-
-  /// Get hosts by group.
-  Future<List<Host>> getByGroup(int? groupId) =>
-      (_orderedHostsQuery()..where((h) => h.groupId.equalsNullable(groupId)))
-          .get()
-          .then(_decryptHosts);
-
-  /// Watch hosts by group.
-  Stream<List<Host>> watchByGroup(int? groupId) =>
-      (_orderedHostsQuery()..where((h) => h.groupId.equalsNullable(groupId)))
-          .watch()
-          .asyncMap(_decryptHosts);
-
-  /// Get favorite hosts.
-  Future<List<Host>> getFavorites() =>
-      (_orderedHostsQuery()..where((h) => h.isFavorite.equals(true)))
-          .get()
-          .then(_decryptHosts);
-
-  /// Watch favorite hosts.
-  Stream<List<Host>> watchFavorites() =>
-      (_orderedHostsQuery()..where((h) => h.isFavorite.equals(true)))
-          .watch()
-          .asyncMap(_decryptHosts);
 
   /// Get a host by ID.
   Future<Host?> getById(int id) async {
@@ -157,25 +127,6 @@ class HostRepository {
     return existingGeneratedNames[hostId] ?? generatedPortProxySlug(label);
   }
 
-  /// Search hosts by label, hostname, or tags.
-  ///
-  /// The query is treated as a literal string: `%` and `_` are matched
-  /// exactly rather than acting as SQL LIKE wildcards.
-  Future<List<Host>> search(String query) {
-    final escaped = escapeSqlLikeQuery(query);
-    return (_orderedHostsQuery()..where(
-          (h) =>
-              h.label.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              h.hostname.like(
-                '%$escaped%',
-                escapeChar: sqlLikeEscapeCharacter,
-              ) |
-              h.tags.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
-        ))
-        .get()
-        .then(_decryptHosts);
-  }
-
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
     if (host.portProxyName.present && host.portProxyName.value != null) {
@@ -265,6 +216,7 @@ class HostRepository {
 
   /// Update an existing host.
   Future<bool> update(Host host) async {
+    final generation = _decryptCache.generation;
     final previousStoredPassword = await _storedPasswordForHost(host.id);
     final preservesUnreadablePassword =
         _undecryptablePasswordHostIds.contains(host.id) &&
@@ -278,8 +230,9 @@ class HostRepository {
         .replace(host.copyWith(password: Value(encryptedPassword)));
     if (updated && !preservesUnreadablePassword) {
       _undecryptablePasswordHostIds.remove(host.id);
-      _evictDecrypted(previousStoredPassword);
-      _rememberEncryptedPlaintext(encryptedPassword, host.password);
+      _decryptCache
+        ..remove(previousStoredPassword)
+        ..remember(encryptedPassword, host.password, generation, isWrite: true);
     }
     return updated;
   }
@@ -300,17 +253,10 @@ class HostRepository {
       return (_db.delete(_db.hosts)..where((h) => h.id.equals(id))).go();
     });
     if (deleted > 0) {
-      _evictDecrypted(previousStoredPassword);
+      _decryptCache.remove(previousStoredPassword);
       _undecryptablePasswordHostIds.remove(id);
     }
     return deleted;
-  }
-
-  /// Toggle favorite status.
-  Future<bool> toggleFavorite(int id) async {
-    final updated = await (_db.update(_db.hosts)..where((h) => h.id.equals(id)))
-        .write(HostsCompanion.custom(isFavorite: _db.hosts.isFavorite.not()));
-    return updated > 0;
   }
 
   /// Applies a partial column update to a single host.
@@ -354,31 +300,17 @@ class HostRepository {
     return host.copyWith(password: Value(decryptedPassword));
   }
 
-  /// Returns the decrypted form of [ciphertext], using [_decryptCache] to
-  /// avoid redundant AES-GCM operations across stream emissions.
-  Future<String?> _cachedDecrypt(String ciphertext) async {
-    final hit = _decryptCache.remove(ciphertext);
-    if (hit != null) {
-      _decryptCache[ciphertext] = hit;
-      return hit;
-    }
-
-    final plaintext = await _secretEncryptionService.decryptNullable(
-      ciphertext,
-    );
-    if (plaintext != null && plaintext.isNotEmpty) {
-      _rememberDecrypted(ciphertext, plaintext);
-    }
-    return plaintext;
-  }
-
   Future<String?> _cachedDecryptOrMigratePassword(
     int hostId,
     String storedPassword,
   ) async {
+    final generation = _decryptCache.generation;
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedPassword)) {
       try {
-        final decryptedPassword = await _cachedDecrypt(storedPassword);
+        final decryptedPassword = await _decryptCache.decrypt(
+          storedPassword,
+          generation,
+        );
         _undecryptablePasswordHostIds.remove(hostId);
         return decryptedPassword;
       } on FormatException catch (error) {
@@ -403,7 +335,7 @@ class HostRepository {
             (h) => h.id.equals(hostId) & h.password.equals(storedPassword),
           ))
           .write(HostsCompanion(password: Value(encryptedPassword)));
-      _rememberDecrypted(encryptedPassword, storedPassword);
+      _decryptCache.remember(encryptedPassword, storedPassword, generation);
     }
     return storedPassword;
   }
@@ -413,32 +345,6 @@ class HostRepository {
       _db.hosts,
     )..where((h) => h.id.equals(id))).getSingleOrNull();
     return row?.password;
-  }
-
-  void _rememberEncryptedPlaintext(String? ciphertext, String? plaintext) {
-    if (ciphertext == null ||
-        ciphertext.isEmpty ||
-        plaintext == null ||
-        plaintext.isEmpty ||
-        _secretEncryptionService.isEncryptedValue(plaintext)) {
-      return;
-    }
-    _rememberDecrypted(ciphertext, plaintext);
-  }
-
-  void _rememberDecrypted(String ciphertext, String plaintext) {
-    _decryptCache.remove(ciphertext);
-    _decryptCache[ciphertext] = plaintext;
-    while (_decryptCache.length > _maxDecryptCacheEntries) {
-      _decryptCache.remove(_decryptCache.keys.first);
-    }
-  }
-
-  void _evictDecrypted(String? ciphertext) {
-    if (ciphertext == null || ciphertext.isEmpty) {
-      return;
-    }
-    _decryptCache.remove(ciphertext);
   }
 
   Future<HostsCompanion> _encryptHostCompanion(HostsCompanion host) async {

@@ -224,14 +224,6 @@ extension MonetizationBillingPeriodPresentation on MonetizationBillingPeriod {
     MonetizationBillingPeriod.lifetime => 'Lifetime',
     MonetizationBillingPeriod.unknown => 'MonkeySSH Pro',
   };
-
-  /// Short suffix for billing copy.
-  String get billingSuffix => switch (this) {
-    MonetizationBillingPeriod.monthly => 'month',
-    MonetizationBillingPeriod.annual => 'year',
-    MonetizationBillingPeriod.lifetime => 'lifetime',
-    MonetizationBillingPeriod.unknown => 'billing period',
-  };
 }
 
 /// Current subscription entitlements.
@@ -301,9 +293,6 @@ class MonetizationOffer {
 
   /// Introductory offer copy, such as a free trial.
   final String? introductoryOfferLabel;
-
-  /// Whether this offer includes an introductory discount or trial.
-  bool get hasIntroductoryOffer => introductoryOfferLabel != null;
 }
 
 /// Current billing and entitlement state for MonkeySSH Pro.

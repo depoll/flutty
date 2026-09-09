@@ -1275,60 +1275,59 @@ class _HostRow extends ConsumerWidget {
             ref.read(allTerminalThemesProvider).asData?.value ??
             TerminalThemes.all;
         return SafeArea(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                title: Text(host.label),
-                subtitle: Text('${connectionIds.length} active connections'),
-              ),
-              for (final connectionId in connectionIds.reversed)
-                () {
-                  final connection = sessionsNotifier.getActiveConnection(
-                    connectionId,
-                  );
-                  return _ConnectionSelectionTile(
-                    connectionId: connectionId,
-                    state:
-                        connectionStates[connectionId] ??
-                        SshConnectionState.disconnected,
-                    endpoint: '${host.username}@${host.hostname}:${host.port}',
-                    preview: connection?.preview,
-                    previewSnapshot: connection?.previewSnapshot,
-                    nativeAcpPreviewSnapshot:
-                        connection?.nativeAcpPreviewSnapshot,
-                    terminalTheme:
-                        connection?.terminalTheme ??
-                        resolveConnectionPreviewTheme(
-                          brightness: Theme.of(context).brightness,
-                          themeSettings: terminalThemeSettings,
-                          availableThemes: terminalThemes,
-                          lightThemeId:
-                              connection?.terminalThemeLightId ??
-                              host.terminalThemeLightId,
-                          darkThemeId:
-                              connection?.terminalThemeDarkId ??
-                              host.terminalThemeDarkId,
-                        ),
-                    sessionTitle: connection?.sessionTitle,
-                    windowTitle: connection?.windowTitle,
-                    iconName: connection?.iconName,
-                    workingDirectory: connection?.workingDirectory,
-                    shellStatus: connection?.shellStatus,
-                    lastExitCode: connection?.lastExitCode,
-                    createdAt: sessionsNotifier
-                        .getSession(connectionId)
-                        ?.createdAt,
-                    onTap: () =>
-                        Navigator.pop(context, 'connection:$connectionId'),
-                  );
-                }(),
-              ListTile(
-                leading: const Icon(Icons.add),
-                title: const Text('New connection'),
-                onTap: () => Navigator.pop(context, 'new'),
-              ),
-            ],
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: connectionIds.length + 2,
+            itemBuilder: (context, index) {
+              if (index == 0) {
+                return ListTile(
+                  title: Text(host.label),
+                  subtitle: Text('${connectionIds.length} active connections'),
+                );
+              }
+              if (index == connectionIds.length + 1) {
+                return ListTile(
+                  leading: const Icon(Icons.add),
+                  title: const Text('New connection'),
+                  onTap: () => Navigator.pop(context, 'new'),
+                );
+              }
+              final connectionId = connectionIds[connectionIds.length - index];
+              final connection = sessionsNotifier.getActiveConnection(
+                connectionId,
+              );
+              return _ConnectionSelectionTile(
+                connectionId: connectionId,
+                state:
+                    connectionStates[connectionId] ??
+                    SshConnectionState.disconnected,
+                endpoint: '${host.username}@${host.hostname}:${host.port}',
+                preview: connection?.preview,
+                previewSnapshot: connection?.previewSnapshot,
+                nativeAcpPreviewSnapshot: connection?.nativeAcpPreviewSnapshot,
+                terminalTheme:
+                    connection?.terminalTheme ??
+                    resolveConnectionPreviewTheme(
+                      brightness: Theme.of(context).brightness,
+                      themeSettings: terminalThemeSettings,
+                      availableThemes: terminalThemes,
+                      lightThemeId:
+                          connection?.terminalThemeLightId ??
+                          host.terminalThemeLightId,
+                      darkThemeId:
+                          connection?.terminalThemeDarkId ??
+                          host.terminalThemeDarkId,
+                    ),
+                sessionTitle: connection?.sessionTitle,
+                windowTitle: connection?.windowTitle,
+                iconName: connection?.iconName,
+                workingDirectory: connection?.workingDirectory,
+                shellStatus: connection?.shellStatus,
+                lastExitCode: connection?.lastExitCode,
+                createdAt: sessionsNotifier.getSession(connectionId)?.createdAt,
+                onTap: () => Navigator.pop(context, 'connection:$connectionId'),
+              );
+            },
           ),
         );
       },
@@ -4035,9 +4034,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     ThemeData theme,
     AiSessionProviderEntry provider,
   ) => InkWell(
-    onTap: provider.isSelectable
-        ? () => unawaited(_showSessionPickerForTool(provider))
-        : null,
+    onTap: () => unawaited(_showSessionPickerForTool(provider)),
     borderRadius: BorderRadius.circular(6),
     child: Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
@@ -4048,9 +4045,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             size: 14,
             color: provider.hasFailure
                 ? theme.colorScheme.error
-                : provider.isSelectable
-                ? theme.colorScheme.primary
-                : theme.colorScheme.onSurfaceVariant,
+                : theme.colorScheme.primary,
           ),
           const SizedBox(width: 6),
           Expanded(
@@ -4061,9 +4056,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               style: theme.textTheme.labelSmall?.copyWith(
                 color: provider.hasFailure
                     ? theme.colorScheme.error
-                    : provider.isSelectable
-                    ? theme.colorScheme.onSurface
-                    : theme.colorScheme.onSurfaceVariant,
+                    : theme.colorScheme.onSurface,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -4091,7 +4084,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     : theme.colorScheme.onSurfaceVariant,
               ),
             ),
-            if (provider.isSelectable) ...[
+            ...[
               const SizedBox(width: 4),
               Icon(
                 Icons.chevron_right,

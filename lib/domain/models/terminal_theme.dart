@@ -638,9 +638,6 @@ class TerminalThemeData {
       'searchHitForeground': searchHitForeground!.toARGB32(),
   };
 
-  /// Serializes this theme to a JSON string.
-  String toJsonString() => jsonEncode(toJson());
-
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||

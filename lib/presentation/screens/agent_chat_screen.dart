@@ -1030,12 +1030,15 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   List<AcpPermissionPrompt> _prompts(AcpSessionState session) {
     final manager = ref.read(acpSessionManagerProvider);
-    final toolTitles = <String, String>{
-      for (final entry
-          in session.timeline.entries.whereType<domain.AcpToolCallEntry>())
-        if (entry.title?.trim().isNotEmpty ?? false)
-          entry.toolCallId: entry.title!.trim(),
-    };
+    final toolTitles = session.pendingPermissions.isEmpty
+        ? const <String, String>{}
+        : <String, String>{
+            for (final entry
+                in session.timeline.entries
+                    .whereType<domain.AcpToolCallEntry>())
+              if (entry.title?.trim().isNotEmpty ?? false)
+                entry.toolCallId: entry.title!.trim(),
+          };
     return [
       for (final pending in session.pendingPermissions)
         acpToolPromptFromSession(
@@ -1235,26 +1238,20 @@ class _AgentChatScreenState extends ConsumerState<AgentChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<AsyncValue<AcpSessionManagerState>>(
-      acpSessionManagerStateProvider,
-      (previous, next) {
-        final previousSession = previous?.asData?.value.byKeyValue(_key.value);
-        final session = next.asData?.value.byKeyValue(_key.value);
-        _composer.updateSession(session);
-        if (!identical(previousSession?.timeline, session?.timeline)) {
-          _scheduleAutoScroll();
-        }
-        if (session != null && session.status == AcpConnectionStatus.ready) {
-          unawaited(_ensureSftpClient());
-        }
-      },
+    final sessionProvider = acpSessionManagerStateProvider.select(
+      (state) => state.asData?.value.byKeyValue(_key.value),
     );
+    ref.listen<AcpSessionState?>(sessionProvider, (previousSession, session) {
+      _composer.updateSession(session);
+      if (!identical(previousSession?.timeline, session?.timeline)) {
+        _scheduleAutoScroll();
+      }
+      if (session != null && session.status == AcpConnectionStatus.ready) {
+        unawaited(_ensureSftpClient());
+      }
+    });
 
-    final managerState = ref
-        .watch(acpSessionManagerStateProvider)
-        .asData
-        ?.value;
-    final session = managerState?.byKeyValue(_key.value);
+    final session = ref.watch(sessionProvider);
     _scheduleInitialScrollRestore();
     final fontSize = clampAgentChatFontSize(
       widget.preferredFontSize ?? ref.watch(fontSizeNotifierProvider),

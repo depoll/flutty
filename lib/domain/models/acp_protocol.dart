@@ -436,17 +436,15 @@ final class AcpInitializeResult implements AcpExtensible {
   factory AcpInitializeResult.fromJson(AcpJsonMap json) {
     final capabilities = AcpJson.objectField(json, 'agentCapabilities');
     final info = AcpJson.objectField(json, 'agentInfo');
-    final authMethods = <AcpAuthMethod>[];
-    for (final item in AcpJson.listField(json, 'authMethods') ?? const []) {
-      final method = AcpJson.object(item);
-      if (method != null) authMethods.add(AcpAuthMethod.fromJson(method));
-    }
     return AcpInitializeResult(
       protocolVersion: AcpJson.integer(json, 'protocolVersion') ?? 0,
       agentCapabilities: capabilities == null
           ? const AcpAgentCapabilities()
           : AcpAgentCapabilities.fromJson(capabilities),
-      authMethods: List<AcpAuthMethod>.unmodifiable(authMethods),
+      authMethods: AcpJson.objectList(
+        json['authMethods'],
+        AcpAuthMethod.fromJson,
+      ),
       agentInfo: info == null ? null : AcpImplementation.fromJson(info),
       meta: AcpJson.meta(json),
       extensions: AcpJson.extensions(json, const [
@@ -591,22 +589,18 @@ final class AcpSessionModeState implements AcpExtensible {
   });
 
   /// Parses session mode state.
-  factory AcpSessionModeState.fromJson(AcpJsonMap json) {
-    final modes = <AcpSessionMode>[];
-    for (final item in AcpJson.listField(json, 'availableModes') ?? const []) {
-      final mode = AcpJson.object(item);
-      if (mode != null) modes.add(AcpSessionMode.fromJson(mode));
-    }
-    return AcpSessionModeState(
-      currentModeId: AcpJson.identifier(json, 'currentModeId') ?? '',
-      availableModes: List<AcpSessionMode>.unmodifiable(modes),
-      meta: AcpJson.meta(json),
-      extensions: AcpJson.extensions(json, const [
-        'currentModeId',
-        'availableModes',
-      ]),
-    );
-  }
+  factory AcpSessionModeState.fromJson(AcpJsonMap json) => AcpSessionModeState(
+    currentModeId: AcpJson.identifier(json, 'currentModeId') ?? '',
+    availableModes: AcpJson.objectList(
+      json['availableModes'],
+      AcpSessionMode.fromJson,
+    ),
+    meta: AcpJson.meta(json),
+    extensions: AcpJson.extensions(json, const [
+      'currentModeId',
+      'availableModes',
+    ]),
+  );
 
   /// Active mode identifier.
   final String currentModeId;
@@ -1092,20 +1086,16 @@ final class AcpSessionSetupResult implements AcpExtensible {
         AcpJson.objectField(json, 'models') ??
         AcpJson.objectField(json, 'modelState') ??
         (AcpJson.listField(json, 'models') == null ? null : json);
-    final configOptions = <AcpSessionConfigOption>[];
-    for (final item in AcpJson.listField(json, 'configOptions') ?? const []) {
-      final option = AcpJson.object(item);
-      if (option != null) {
-        configOptions.add(AcpSessionConfigOption.fromJson(option));
-      }
-    }
     return AcpSessionSetupResult(
       sessionId: AcpJson.identifier(json, 'sessionId'),
       modes: modes == null
           ? _modeStateFromProviderMeta(meta)
           : AcpSessionModeState.fromJson(modes),
       models: models == null ? null : AcpModelState.fromJson(models),
-      configOptions: List<AcpSessionConfigOption>.unmodifiable(configOptions),
+      configOptions: AcpJson.objectList(
+        json['configOptions'],
+        AcpSessionConfigOption.fromJson,
+      ),
       meta: meta,
       extensions: AcpJson.extensions(json, const [
         'sessionId',

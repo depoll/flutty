@@ -84,15 +84,6 @@ build_fingerprint() {
   } | sha256_stdin
 }
 
-assets_are_complete() {
-  [[ -s "$ASSET_DIR/manifest.json" ]] || return 1
-  local target platform
-  for target in "${targets[@]}"; do
-    read -r _ _ platform <<<"$target"
-    [[ -s "$ASSET_DIR/bin/$platform/monkeymux.gz" ]] || return 1
-  done
-}
-
 fingerprint="$(build_fingerprint)"
 if [[ "$print_fingerprint" == true ]]; then
   printf '%s\n' "$fingerprint"
@@ -102,7 +93,7 @@ stored_fingerprint=""
 if [[ -f "$STAMP_FILE" ]]; then
   stored_fingerprint="$(<"$STAMP_FILE")"
 fi
-if [[ "$force" == false ]] && assets_are_complete &&
+if [[ "$force" == false ]] &&
   [[ "$stored_fingerprint" == "$fingerprint" ]] &&
   python3 "$ROOT_DIR/scripts/verify_monkeymux_assets.py" "$ASSET_DIR" "$VERSION"; then
   echo "MonkeyMux assets are current ($VERSION)."

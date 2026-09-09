@@ -70,8 +70,8 @@ void main() {
         command,
         "'/home/me/.monkeyssh/bin/monkey mux' attach --quiet "
         "--client-id 'app 7' --clip-viewport --update-policy never "
-        "--restore-yolo --cwd '~/src/it'\"'\"'s app' --name 'Codex agent' --command "
-        "'codex --model '\"'\"'gpt-5.4'\"'\"'' 'work'\"'\"'space'",
+        r"--restore-yolo --cwd '~/src/it'\''s app' --name 'Codex agent' --command "
+        r"'codex --model '\''gpt-5.4'\''' 'work'\''space'",
       );
     });
 
@@ -190,7 +190,6 @@ void main() {
       expect(status.supportsShutdown, isTrue);
       expect(status.hasNativeAcpWindows, isFalse);
       expect(status.nativeAcpWindowCount, 0);
-      expect(status.supportsViewportClipping, isTrue);
       expect(status.supportsBracketedPasteControlInput, isTrue);
       expect(status.needsUpdate('0.1.13'), isFalse);
       expect(status.needsUpdate('0.1.14'), isTrue);

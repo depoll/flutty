@@ -773,7 +773,8 @@ func TestC1QueryScannerPreservesUtf8ContinuationBytes(t *testing.T) {
 	if !bytes.Equal(filtered, input) {
 		t.Fatalf("UTF-8 output = %q, want %q", filtered, input)
 	}
-	if queries := terminalQueriesFromData(input); len(queries) != 0 {
+	window.appendPendingTerminalQueriesLocked(input, nil, nil)
+	if queries := window.pendingTerminalQueries; len(queries) != 0 {
 		t.Fatalf("UTF-8 output produced terminal queries: %q", queries)
 	}
 }
@@ -12007,90 +12008,6 @@ func TestCreateWindowOptionsForRestoreBuildsYoloAgentCommands(t *testing.T) {
 	}
 }
 
-func TestThemeHintUsesSafeRefreshCapabilities(t *testing.T) {
-	focusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
-	focusWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
-	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	colorSchemeOnlyWindow := &muxWindow{foregroundCommand: "unknown-tui"}
-	colorSchemeOnlyWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
-	colorQueryWindow := &muxWindow{
-		foregroundCommand: "unknown-tui",
-		foregroundPid:     42,
-	}
-	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031h"))
-	colorQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
-	plainWindow := &muxWindow{foregroundCommand: "codex"}
-	plainFocusWindow := &muxWindow{foregroundCommand: "unknown-tui"}
-	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	plainQueryWindow := &muxWindow{
-		foregroundCommand: "unknown-tui",
-		foregroundPid:     42,
-	}
-	plainQueryWindow.observeTerminalMetadataLocked([]byte("\x1b]11;?\x1b\\"))
-	copilotFocusWindow := &muxWindow{foregroundCommand: "copilot"}
-	copilotFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004h"))
-	copilotPlainWindow := &muxWindow{foregroundCommand: "copilot"}
-
-	if !focusWindow.supportsThemeHintLocked() {
-		t.Fatal("DEC 2031 + focus-aware window did not support theme hints")
-	}
-	if !colorSchemeOnlyWindow.supportsThemeHintLocked() {
-		t.Fatal("DEC 2031-only window did not support theme hints via mode report")
-	}
-	if !colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("DEC 2031 + OSC 11 query window did not support theme hints")
-	}
-	if !copilotFocusWindow.supportsThemeHintLocked() {
-		t.Fatal("Copilot focus-aware window did not support theme hints")
-	}
-	if copilotPlainWindow.supportsThemeHintLocked() {
-		t.Fatal("Copilot window without focus mode supported theme hints")
-	}
-	if plainWindow.supportsThemeHintLocked() {
-		t.Fatal("window without focus mode or OSC 11 query supported theme hints")
-	}
-	if !plainFocusWindow.supportsThemeHintLocked() {
-		t.Fatal("focus-aware window did not support focus refresh")
-	}
-	if plainQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("OSC 11 query window without DEC 2031 supported theme hints")
-	}
-
-	focusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	// DEC 2031 alone still opts the window into mode-report theme hints.
-	if !focusWindow.supportsThemeHintLocked() {
-		t.Fatal("DEC 2031 window lost theme-hint support after focus mode disabled")
-	}
-	plainFocusWindow.observeTerminalModesLocked([]byte("\x1b[?1004l"))
-	if plainFocusWindow.supportsThemeHintLocked() {
-		t.Fatal("plain focus-aware window supported theme hints after focus mode disabled")
-	}
-
-	colorQueryWindow.foregroundPid = 43
-	// Both the OSC query cache and DEC 2031 tracking are pinned to the process
-	// that negotiated them, so a foreground PID change must drop theme pushes
-	// rather than spew reports at a new program in the same pane.
-	if colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("stale DEC 2031/OSC capabilities still supported theme hints after foreground pid changed")
-	}
-	if keys := colorQueryWindow.themeHintRefreshKeysLocked(); len(keys) != 0 {
-		t.Fatalf("stale OSC 11 query still refreshed keys = %v", keys)
-	}
-	if colorQueryWindow.themeHintModeReportLocked() {
-		t.Fatal("stale DEC 2031 still requested a mode report after foreground pid changed")
-	}
-
-	colorQueryWindow.foregroundPid = 42
-	colorQueryWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
-	if colorQueryWindow.supportsThemeHintLocked() {
-		t.Fatal("window supported theme hints after DEC 2031 disabled")
-	}
-	colorSchemeOnlyWindow.observeTerminalModesLocked([]byte("\x1b[?2031l"))
-	if colorSchemeOnlyWindow.supportsThemeHintLocked() {
-		t.Fatal("DEC 2031-only window supported theme hints after mode disabled")
-	}
-}
-
 func TestThemeHintVerifiesForegroundPidWithoutThrottle(t *testing.T) {
 	inputReader, inputWriter, err := os.Pipe()
 	if err != nil {
@@ -12184,6 +12101,12 @@ func TestThemeHintDoesNotReSendObservedBackgroundReport(t *testing.T) {
 	if !strings.Contains(got, "\x1b[O") {
 		t.Fatalf("theme hint = %q, expected focus-lost for focus-aware window", got)
 	}
+	window.observeTerminalModesLocked([]byte("\x1b[?2031h"))
+	foregroundProcessGroupForWindow = func(*muxWindow) int { return 43 }
+	if server.sendThemeHint(backgroundReport) {
+		t.Fatal("theme hint was sent using stale focus/DEC 2031/OSC capabilities")
+	}
+
 }
 
 func TestThemeHintAnswersFutureBackgroundQuery(t *testing.T) {
@@ -13625,5 +13548,44 @@ func TestWithheldAttachOscSuffixTrimmedRequiresSuffixMatch(t *testing.T) {
 	}
 	if string(window.attachOscBuffer) != "\x1b]11;?" {
 		t.Fatalf("attach OSC buffer = %q, want it left intact", window.attachOscBuffer)
+	}
+}
+
+func TestCommandNameForPIDUsesCachedProcessTable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nprintf '42 1 42 zsh zsh\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	cache := &commandProcessTableCache
+	cache.mu.Lock()
+	previous, loaded := cache.processes, cache.loadedAt
+	now := time.Now()
+	cache.processes = map[int]processInfo{42: {comm: "node", args: "node /tmp/copilot"}}
+	cache.loadedAt = now
+	cache.mu.Unlock()
+	defer func() {
+		cache.mu.Lock()
+		cache.processes, cache.loadedAt = previous, loaded
+		cache.mu.Unlock()
+	}()
+	if got := commandNameForPID(42); got != "copilot" {
+		t.Fatalf("cached command = %q", got)
+	}
+	if got := commandNameForPID(-1); got != "" {
+		t.Fatalf("invalid pid = %q", got)
+	}
+	if got := commandNameForPID(99999999); got != "" {
+		t.Fatalf("missing pid = %q", got)
+	}
+	if got := cachedProcessTable(now.Add(499 * time.Millisecond))[42].comm; got != "node" {
+		t.Fatalf("cache refreshed early: %q", got)
+	}
+	table := cachedProcessTable(now.Add(500 * time.Millisecond))
+	if info, ok := table[42]; !ok || info.comm != "zsh" {
+		t.Fatalf("cache did not refresh at 500 ms: %+v", info)
+	}
+	if got, want := commandNameForPID(42), commandNameFromProcessFields(table[42].comm, table[42].args); got != want {
+		t.Fatalf("refreshed command = %q, want %q", got, want)
 	}
 }

@@ -701,16 +701,6 @@ void main() {
       );
     });
 
-    test('supportsResume returns true for all tools', () {
-      for (final tool in AgentLaunchTool.values) {
-        expect(
-          tool.supportsResume,
-          isTrue,
-          reason: '${tool.name} should support resume',
-        );
-      }
-    });
-
     test('supportsYoloMode reflects each CLI startup capability', () {
       // Pi has no approval layer, and OpenClaw's YOLO preset is a persisted
       // exec-policy mutation rather than a per-launch flag.

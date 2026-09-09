@@ -959,17 +959,6 @@ func readProcessTable() map[int]processInfo {
 	return processes
 }
 
-func commandNameForPID(pid int) string {
-	if pid <= 0 {
-		return ""
-	}
-	table := cachedProcessTable(time.Now())
-	if info, ok := table[pid]; ok {
-		return commandNameFromProcessFields(info.comm, info.args)
-	}
-	return ""
-}
-
 type memoryStatusEx struct {
 	length               uint32
 	memoryLoad           uint32

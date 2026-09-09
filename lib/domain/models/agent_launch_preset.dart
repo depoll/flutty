@@ -109,12 +109,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.grokBuild => const ['grok'],
   };
 
-  /// Whether this tool supports session resume.
-  ///
-  /// All currently supported agents expose a resume/continue path. Keep the
-  /// flag so callers can gate UI without hard-coding tool identity.
-  bool get supportsResume => true;
-
   /// Matching discovered-session provider name, if this tool supports recent
   /// session discovery.
   String? get discoveredSessionToolName => switch (this) {

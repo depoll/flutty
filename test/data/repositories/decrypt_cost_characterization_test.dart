@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
@@ -98,7 +100,123 @@ Future<double> _timeRepeated(Future<void> Function() action) async {
   return sw.elapsedMicroseconds / _repetitions;
 }
 
+class _PausedEncryptionService extends SecretEncryptionService {
+  _PausedEncryptionService() : super.forTesting();
+
+  final started = Completer<void>();
+  final resume = Completer<void>();
+  bool pauseDecrypt = false;
+  bool pauseEncrypt = false;
+
+  @override
+  Future<String?> decryptNullable(String? value) async {
+    if (pauseDecrypt) {
+      pauseDecrypt = false;
+      started.complete();
+      await resume.future;
+    }
+    return super.decryptNullable(value);
+  }
+
+  @override
+  Future<String?> encryptNullable(String? value) async {
+    if (pauseEncrypt) {
+      pauseEncrypt = false;
+      started.complete();
+      await resume.future;
+    }
+    return super.encryptNullable(value);
+  }
+}
+
 void main() {
+  test('clear during a key list decrypt also rejects later rows', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final encryption = _PausedEncryptionService();
+    final repository = KeyRepository(db, encryption);
+    await _insertKeysWithSecrets(repository, 2);
+    encryption.pauseDecrypt = true;
+    final pending = repository.getAllDecryptable();
+    await encryption.started.future;
+    repository.clearDecryptionCache();
+    encryption.resume.complete();
+    expect((await pending).keys, hasLength(2));
+    expect(repository.debugDecryptionCacheSize, 0);
+  });
+
+  for (final kind in ['host', 'key']) {
+    for (final operation in [
+      'decrypt',
+      'migration',
+      if (kind == 'host') 'update',
+    ]) {
+      test('$kind cache rejects $operation insertion after clear', () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final encryption = _PausedEncryptionService();
+        final hosts = HostRepository(db, encryption);
+        final keys = KeyRepository(db, encryption);
+        final stored = operation == 'migration'
+            ? 'secret'
+            : (await encryption.encryptNullable('secret'))!;
+        final id = kind == 'host'
+            ? await db
+                  .into(db.hosts)
+                  .insert(
+                    HostsCompanion.insert(
+                      label: 'Host',
+                      hostname: 'example.com',
+                      username: 'user',
+                      password: Value(stored),
+                    ),
+                  )
+            : await db
+                  .into(db.sshKeys)
+                  .insert(
+                    SshKeysCompanion.insert(
+                      name: 'Key',
+                      keyType: 'ed25519',
+                      publicKey: 'public',
+                      privateKey: stored,
+                      passphrase: Value(stored),
+                    ),
+                  );
+        final host = kind == 'host' && operation == 'update'
+            ? await hosts.getById(id)
+            : null;
+        encryption
+          ..pauseDecrypt = operation == 'decrypt'
+          ..pauseEncrypt = operation != 'decrypt';
+        final pending = operation == 'update'
+            ? hosts.update(host!.copyWith(password: const Value('new secret')))
+            : kind == 'host'
+            ? hosts.getById(id)
+            : keys.getById(id);
+        await encryption.started.future;
+        hosts.clearDecryptionCache();
+        keys.clearDecryptionCache();
+        encryption.resume.complete();
+        await pending;
+        expect(hosts.debugDecryptionCacheSize, 0);
+        expect(keys.debugDecryptionCacheSize, 0);
+        if (kind == 'host') {
+          expect(
+            (await hosts.getById(id))!.password,
+            operation == 'update' ? 'new secret' : 'secret',
+          );
+          expect(hosts.debugDecryptionCacheSize, greaterThan(0));
+        } else {
+          expect(
+            (await keys.getById(id))!.privateKey,
+            operation == 'update' ? 'new secret' : 'secret',
+          );
+          expect(keys.debugDecryptionCacheSize, greaterThan(0));
+        }
+      });
+    }
+  }
+
   group('Decrypt-cost characterisation – HostRepository.getAll', () {
     for (final n in [10, 50, 100]) {
       test('$n hosts with passwords – mean µs for getAll()', () async {
@@ -388,7 +506,7 @@ void main() {
       },
     );
 
-    test('cache does not serve stale private key after update', () async {
+    test('cache does not serve stale private key after replacement', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       final enc = SecretEncryptionService.forTesting();
       final repo = KeyRepository(db, enc);
@@ -407,10 +525,14 @@ void main() {
       expect((await repo.getById(id))!.privateKey, '-----BEGIN old');
       expect(repo.debugDecryptionCacheSize, 1);
 
-      // Update private key → new ciphertext.
       final key = await repo.getById(id);
-      await repo.update(key!.copyWith(privateKey: '-----BEGIN new'));
-      expect(repo.debugDecryptionCacheSize, 1);
+      await repo.delete(id);
+      await repo.insert(
+        key!
+            .toCompanion(true)
+            .copyWith(privateKey: const Value('-----BEGIN new')),
+      );
+      expect(repo.debugDecryptionCacheSize, 0);
 
       expect((await repo.getById(id))!.privateKey, '-----BEGIN new');
 

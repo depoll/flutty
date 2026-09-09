@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -60,6 +61,8 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../helpers/fake_wakelock_plus_platform.dart';
+import '../../helpers/terminal_screen_mux_fixture.dart';
 import '../../support/fake_acp_session_manager.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
@@ -401,20 +404,6 @@ class _ActiveTunnelsSshSession extends SshSession {
 
   @override
   List<ActiveTunnelInfo> get activeTunnels => _activeTunnels;
-}
-
-class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
-  final toggleCalls = <bool>[];
-  bool _enabled = false;
-
-  @override
-  Future<void> toggle({required bool enable}) async {
-    _enabled = enable;
-    toggleCalls.add(enable);
-  }
-
-  @override
-  Future<bool> get enabled async => _enabled;
 }
 
 class _RecordingSftpPage extends StatefulWidget {
@@ -767,88 +756,6 @@ void main() {
   );
 
   group('terminal native selection helpers', () {
-    test('starts selection on separator characters', () {
-      final terminal = Terminal(maxLines: 100)..write('foo/bar');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(3, 0),
-      );
-
-      expect(range, isNotNull);
-      expect(range!.begin, const CellOffset(3, 0));
-      expect(range.end, const CellOffset(4, 0));
-    });
-
-    test('starts selection when a touch lands near a word', () {
-      final terminal = Terminal(maxLines: 100)..write('alpha  beta');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(6, 0),
-      );
-
-      expect(range, isNotNull);
-      expect(range!.begin, const CellOffset(7, 0));
-      expect(range.end, const CellOffset(11, 0));
-    });
-
-    test('ignores trailing blanks that are not near selectable text', () {
-      final terminal = Terminal(maxLines: 100)..write('alpha');
-
-      final range = resolveNativeTouchSelectionRange(
-        buffer: terminal.buffer,
-        cellOffset: const CellOffset(20, 0),
-      );
-
-      expect(range, isNull);
-    });
-
-    test('adds paste action to the native overlay context menu', () {
-      var didPaste = false;
-
-      final items = buildNativeSelectionContextMenuButtonItems(
-        defaultItems: const [
-          ContextMenuButtonItem(
-            type: ContextMenuButtonType.copy,
-            onPressed: null,
-          ),
-        ],
-        onPaste: () => didPaste = true,
-      );
-
-      final pasteItem = items.singleWhere(
-        (item) => item.type == ContextMenuButtonType.paste,
-      );
-      pasteItem.onPressed!();
-
-      expect(didPaste, isTrue);
-    });
-
-    test(
-      'preserves default copy action in the native overlay context menu',
-      () {
-        var didCopy = false;
-
-        final items = buildNativeSelectionContextMenuButtonItems(
-          defaultItems: [
-            ContextMenuButtonItem(
-              type: ContextMenuButtonType.copy,
-              onPressed: () => didCopy = true,
-            ),
-          ],
-          onPaste: () {},
-        );
-
-        final copyItem = items.singleWhere(
-          (item) => item.type == ContextMenuButtonType.copy,
-        );
-        copyItem.onPressed!();
-
-        expect(didCopy, isTrue);
-      },
-    );
-
     test('runs terminal selection menu action before hiding toolbar', () {
       String? selectedText = 'alpha';
       String? copiedText;
@@ -1401,7 +1308,7 @@ void main() {
     late StreamController<Uint8List> shellStdoutController;
     late List<List<int>> shellWrites;
     late WakelockPlusPlatformInterface originalWakelockPlatform;
-    late _FakeWakelockPlusPlatform wakelockPlatform;
+    late FakeWakelockPlusPlatform wakelockPlatform;
 
     test('uses terminal theme brightness for keyboard appearance', () {
       expect(
@@ -1429,7 +1336,7 @@ void main() {
       shellStdoutController = StreamController<Uint8List>.broadcast();
       shellWrites = <List<int>>[];
       originalWakelockPlatform = wakelockPlusPlatformInstance;
-      wakelockPlatform = _FakeWakelockPlusPlatform();
+      wakelockPlatform = FakeWakelockPlusPlatform();
       wakelockPlusPlatformInstance = wakelockPlatform;
 
       when(
@@ -1478,6 +1385,23 @@ void main() {
       await shellStdoutController.close();
       await db.close();
     });
+
+    TerminalScreenMuxFixture createMuxFixture(
+      TmuxService tmuxService,
+      MonkeyMuxService monkeyMuxService,
+      String sessionName,
+    ) => TerminalScreenMuxFixture(
+      database: db,
+      hostRepository: hostRepository,
+      monetizationService: monetizationService,
+      monetizationState: _proMonetizationState,
+      activeSessions: () => _TestActiveSessionsNotifier(session),
+      host: host,
+      session: session,
+      sessionName: sessionName,
+      tmuxService: tmuxService,
+      monkeyMuxService: monkeyMuxService,
+    );
 
     Future<void> pumpScreen(
       WidgetTester tester, {
@@ -2869,6 +2793,82 @@ void main() {
     );
 
     testWidgets(
+      'desktop Native Selection selects and copies rendered text',
+      (tester) async {
+        String? copied;
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          (call) async {
+            if (call.method == 'Clipboard.setData') {
+              copied = (call.arguments as Map)['text'] as String?;
+            }
+            return null;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            SystemChannels.platform,
+            null,
+          ),
+        );
+        session.terminal!.write('alpha beta\r\n');
+        await pumpScreen(tester);
+        await openTerminalOverflowMenu(tester);
+        await tester.tap(terminalMenuItemButton('Native Selection'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .useSystemSelection,
+          isTrue,
+        );
+        final render = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        final start = render.localToGlobal(
+          render.getOffset(const CellOffset(0, 0)) +
+              Offset(1, render.cellSize.height / 2),
+        );
+        final end = render.localToGlobal(
+          render.getOffset(const CellOffset(5, 0)) +
+              Offset(1, render.cellSize.height / 2),
+        );
+        final mouse = await tester.startGesture(
+          start,
+          kind: PointerDeviceKind.mouse,
+        );
+        await mouse.moveTo(end);
+        await mouse.up();
+        await tester.pump();
+        expect(render.getSelectedContent()?.plainText, 'alpha');
+        final contextClick = await tester.startGesture(
+          start,
+          kind: PointerDeviceKind.mouse,
+          buttons: kSecondaryMouseButton,
+        );
+        await contextClick.up();
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Copy').last);
+        await tester.pumpAndSettle();
+        expect(copied, 'alpha');
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .useSystemSelection,
+          isFalse,
+        );
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .focusNode!
+              .hasFocus,
+          isTrue,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.macOS),
+    );
+
+    testWidgets(
       'overflow menu shows Create Snippet when system selection has text',
       (tester) async {
         session.terminal!.write('echo hello\n');
@@ -4047,8 +4047,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
@@ -4061,31 +4059,17 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         session.terminal!.write('\x1b[?1004h');
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
+        muxFixture
+          ..stubPrefetch()
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents();
         when(
           () => monkeyMuxService.refreshTerminalTheme(
             session,
@@ -4101,32 +4085,7 @@ void main() {
           );
         });
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -4136,7 +4095,7 @@ void main() {
         themeRefreshCount = 0;
         refreshedThemes.clear();
 
-        windowEvents.add(
+        muxFixture.windowEvents.add(
           const TmuxWindowSnapshotEvent(
             TmuxWindow(
               index: 0,
@@ -4193,8 +4152,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -4204,77 +4161,23 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         // A foreground agent enables focus reporting; this is the signal that
         // gates theme hints toward a real TUI.
         session.terminal!.write('\x1b[?1004h');
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
+        muxFixture
+          ..stubPrefetch()
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents()
+          ..stubPaneContext()
+          ..stubThemeRefresh();
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -4331,8 +4234,6 @@ void main() {
         // previous theme.
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -4342,75 +4243,21 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
-        session.terminal!.write('\x1b[?1004h');
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
-
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
         );
+        session.terminal!.write('\x1b[?1004h');
+        muxFixture
+          ..stubPrefetch()
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents()
+          ..stubPaneContext()
+          ..stubThemeRefresh();
+
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -4536,8 +4383,6 @@ void main() {
         // stale).
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -4547,43 +4392,22 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         session.terminal!.write('\x1b[?1004h');
 
         final refreshForceFlags = <bool>[];
         final firstRefresh = Completer<void>();
         var trapIndex = -1;
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
+        muxFixture
+          ..stubPrefetch()
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents()
+          ..stubPaneContext();
         when(
           () => monkeyMuxService.refreshTerminalTheme(
             session,
@@ -4602,32 +4426,7 @@ void main() {
           }
         });
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -4685,8 +4484,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
@@ -4710,15 +4507,18 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         session.debugHandlePrivateOsc('9', ['4', '1', '50']);
         expect(session.terminalProgress, isNotNull);
         for (var row = 0; row < 120; row += 1) {
           session.terminal!.write('row $row\r\n');
         }
 
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
+        muxFixture.stubPrefetch();
         when(
           () => tmuxService.currentPaneContext(
             session,
@@ -4726,27 +4526,10 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
+        muxFixture
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents();
         when(
           () => monkeyMuxService.selectWindow(
             session,
@@ -4761,42 +4544,9 @@ void main() {
           monkeyMuxService.controlOperations.add('select');
           session.debugHandlePrivateOsc('9', ['4', '1', '65']);
         });
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
+        muxFixture.stubThemeRefresh();
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -4863,7 +4613,9 @@ void main() {
           isNot(contains('resize:redraw')),
         );
 
-        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        muxFixture.windowEvents.add(
+          const TmuxWindowListEvent(activeAgentWindows),
+        );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
         await tester.pump();
@@ -5201,8 +4953,6 @@ void main() {
         // corrected it until the user opened or closed the keyboard.
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -5212,74 +4962,16 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
+        final muxFixture =
+            createMuxFixture(tmuxService, monkeyMuxService, sessionName)
+              ..stubPrefetch()
+              ..stubForegroundClient()
+              ..stubWindows(() => initialWindows)
+              ..stubWindowEvents()
+              ..stubPaneContext()
+              ..stubThemeRefresh();
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
         await tester.pump(const Duration(milliseconds: 300));
@@ -5328,8 +5020,6 @@ void main() {
         // side has a reason to speak up and only opening the keyboard escapes.
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
@@ -5344,13 +5034,16 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         for (var row = 0; row < 120; row += 1) {
           session.terminal!.write('row $row\r\n');
         }
 
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
+        muxFixture.stubPrefetch();
         when(
           () => tmuxService.currentPaneContext(
             session,
@@ -5358,27 +5051,10 @@ void main() {
             extraFlags: any(named: 'extraFlags'),
           ),
         ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
+        muxFixture
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents();
         when(
           () => monkeyMuxService.selectWindow(
             session,
@@ -5392,50 +5068,11 @@ void main() {
         ).thenAnswer((_) async {
           monkeyMuxService.controlOperations.add('select');
         });
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
+        muxFixture
+          ..stubPaneContext()
+          ..stubThemeRefresh();
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -5453,7 +5090,9 @@ void main() {
         await tester.pump();
         await tester.pump();
 
-        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        muxFixture.windowEvents.add(
+          const TmuxWindowListEvent(activeAgentWindows),
+        );
         await tester.pump();
         await tester.pump();
         await tester.pump();
@@ -5484,8 +5123,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -5495,75 +5132,16 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture =
+            createMuxFixture(tmuxService, monkeyMuxService, sessionName)
+              ..stubPrefetch()
+              ..stubForegroundClient()
+              ..stubWindows(() => initialWindows)
+              ..stubWindowEvents()
+              ..stubPaneContext()
+              ..stubThemeRefresh();
 
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
-
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
@@ -5646,8 +5224,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'agent', isActive: true, id: '@0'),
@@ -5657,75 +5233,16 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture =
+            createMuxFixture(tmuxService, monkeyMuxService, sessionName)
+              ..stubPrefetch()
+              ..stubForegroundClient()
+              ..stubWindows(() => initialWindows)
+              ..stubWindowEvents()
+              ..stubPaneContext()
+              ..stubThemeRefresh();
 
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
-
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
@@ -5771,8 +5288,6 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         final monkeyMuxService = _MockMonkeyMuxService();
-        final windowEvents = StreamController<TmuxWindowChangeEvent>();
-        addTearDown(windowEvents.close);
         const sessionName = 'work';
         const initialWindows = <TmuxWindow>[
           TmuxWindow(index: 0, name: 'shell', isActive: true, id: '@0'),
@@ -5787,78 +5302,24 @@ void main() {
           tmuxSessionName: sessionName,
           remoteMuxBackend: RemoteMuxBackend.monkeyMux,
         );
+        final muxFixture = createMuxFixture(
+          tmuxService,
+          monkeyMuxService,
+          sessionName,
+        );
         for (var row = 0; row < 120; row += 1) {
           session.terminal!.write('row $row\r\n');
         }
 
-        when(
-          () => tmuxService.prefetchInstalledAgentTools(session),
-        ).thenAnswer((_) async {});
-        when(
-          () => monkeyMuxService.hasForegroundClientOrThrow(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => true);
-        when(
-          () => monkeyMuxService.listWindows(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => initialWindows);
-        when(
-          () => monkeyMuxService.watchWindowChanges(
-            session,
-            sessionName,
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) => windowEvents.stream);
-        when(
-          () => monkeyMuxService.currentPaneContext(
-            session,
-            sessionName,
-            priority: any(named: 'priority'),
-            extraFlags: any(named: 'extraFlags'),
-          ),
-        ).thenAnswer((_) async => null);
-        when(
-          () => monkeyMuxService.refreshTerminalTheme(
-            session,
-            sessionName,
-            any(),
-            extraFlags: any(named: 'extraFlags'),
-            forceForegroundRedraw: any(named: 'forceForegroundRedraw'),
-          ),
-        ).thenAnswer((_) async {});
+        muxFixture
+          ..stubPrefetch()
+          ..stubForegroundClient()
+          ..stubWindows(() => initialWindows)
+          ..stubWindowEvents()
+          ..stubPaneContext()
+          ..stubThemeRefresh();
 
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [
-              databaseProvider.overrideWithValue(db),
-              hostRepositoryProvider.overrideWithValue(hostRepository),
-              monetizationServiceProvider.overrideWithValue(
-                monetizationService,
-              ),
-              monetizationStateProvider.overrideWith(
-                (ref) => Stream.value(_proMonetizationState),
-              ),
-              sharedClipboardProvider.overrideWith((ref) async => false),
-              activeSessionsProvider.overrideWith(
-                () => _TestActiveSessionsNotifier(session),
-              ),
-              tmuxServiceProvider.overrideWithValue(tmuxService),
-              monkeyMuxServiceProvider.overrideWithValue(monkeyMuxService),
-            ],
-            child: MaterialApp(
-              home: TerminalScreen(
-                hostId: host.id,
-                connectionId: session.connectionId,
-              ),
-            ),
-          ),
-        );
+        await muxFixture.pump(tester);
 
         await tester.pump();
         await tester.pump();
@@ -5918,7 +5379,9 @@ void main() {
         final paintCountBeforeWindowEvent =
             terminalViewState.terminalPaintCount ?? 0;
 
-        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        muxFixture.windowEvents.add(
+          const TmuxWindowListEvent(activeAgentWindows),
+        );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 120));
         await tester.pump();
@@ -6047,7 +5510,7 @@ void main() {
           reason: 'transient image retries stop after the bounded budget',
         );
 
-        windowEvents.add(const TmuxWindowListEvent(initialWindows));
+        muxFixture.windowEvents.add(const TmuxWindowListEvent(initialWindows));
         await tester.pump();
         final staleResult = Completer<MonkeyMuxImageReplayResult>();
         monkeyMuxService.imageReplayFutures
@@ -6068,7 +5531,9 @@ void main() {
         await tester.pump();
         expect(monkeyMuxService.imageReplayCalls.last.imageIds, <int>{58});
 
-        windowEvents.add(const TmuxWindowListEvent(activeAgentWindows));
+        muxFixture.windowEvents.add(
+          const TmuxWindowListEvent(activeAgentWindows),
+        );
         await tester.pump();
         session.terminal!.write(
           '\x1b[2J\x1b[H\x1b[38;5;59m$placeholder\x1b[39m',

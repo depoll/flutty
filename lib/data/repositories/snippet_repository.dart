@@ -2,7 +2,6 @@ import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../database/database.dart';
-import 'like_query.dart';
 
 /// Repository for managing snippets.
 class SnippetRepository {
@@ -16,40 +15,6 @@ class SnippetRepository {
 
   /// Watch all snippets.
   Stream<List<Snippet>> watchAll() => _orderedSnippetsQuery().watch();
-
-  /// Get snippets by folder.
-  Future<List<Snippet>> getByFolder(int? folderId) =>
-      (_orderedSnippetsQuery()
-            ..where((s) => s.folderId.equalsNullable(folderId)))
-          .get();
-
-  /// Watch snippets by folder.
-  Stream<List<Snippet>> watchByFolder(int? folderId) =>
-      (_orderedSnippetsQuery()
-            ..where((s) => s.folderId.equalsNullable(folderId)))
-          .watch();
-
-  /// Get frequently used snippets.
-  Future<List<Snippet>> getFrequent({int limit = 10}) =>
-      (_db.select(_db.snippets)
-            ..orderBy([(s) => OrderingTerm.desc(s.usageCount)])
-            ..limit(limit))
-          .get();
-
-  /// Search snippets.
-  Future<List<Snippet>> search(String query) {
-    final escaped = escapeSqlLikeQuery(query);
-    return (_orderedSnippetsQuery()..where(
-          (s) =>
-              s.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              s.command.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter) |
-              s.description.like(
-                '%$escaped%',
-                escapeChar: sqlLikeEscapeCharacter,
-              ),
-        ))
-        .get();
-  }
 
   /// Get a snippet by ID.
   Future<Snippet?> getById(int id) => (_db.select(
@@ -119,10 +84,6 @@ class SnippetRepository {
         .into(_db.snippetFolders)
         .insert(folder.copyWith(sortOrder: sortOrder));
   }
-
-  /// Update a folder.
-  Future<bool> updateFolder(SnippetFolder folder) =>
-      _db.update(_db.snippetFolders).replace(folder);
 
   /// Delete a folder, moving its snippets back to No folder.
   Future<int> deleteFolder(int id) => _db.transaction(() async {

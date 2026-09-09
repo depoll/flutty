@@ -130,6 +130,29 @@ func TestAcpWireFramingRoundTrip(t *testing.T) {
 		!bytes.Equal(got.Data, want.Data) {
 		t.Fatalf("wire frame = %#v, want %#v", got, want)
 	}
+	want.Data = nil
+	base, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{acpMaxFrameBytes - 1, acpMaxFrameBytes, acpMaxFrameBytes + 1} {
+		want.Type = strings.Repeat("x", size-len(base)+len("input"))
+		buffer.Reset()
+		err := writeAcpWireFrame(&buffer, want)
+		if size >= acpMaxFrameBytes {
+			if err == nil || buffer.Len() != 0 {
+				t.Fatalf("accepted oversized JSON payload of %d bytes", size)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readAcpWireFrame(bufio.NewReader(&buffer)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 }
 
 func TestAcpAdaptiveReplayPolicy(t *testing.T) {

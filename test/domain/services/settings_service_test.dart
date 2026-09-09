@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:drift/native.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -204,16 +205,9 @@ void main() {
       );
       expect(SettingKeys.terminalFont, 'terminal_font');
       expect(SettingKeys.terminalFontSize, 'terminal_font_size');
-      expect(SettingKeys.terminalColorScheme, 'terminal_color_scheme');
       expect(SettingKeys.cursorStyle, 'cursor_style');
       expect(SettingKeys.bellSound, 'bell_sound');
       expect(SettingKeys.shellCompletions, 'shell_completions');
-      expect(SettingKeys.hapticFeedback, 'haptic_feedback');
-      expect(SettingKeys.keyboardToolbar, 'keyboard_toolbar');
-      expect(SettingKeys.autoReconnect, 'auto_reconnect');
-      expect(SettingKeys.keepAliveInterval, 'keep_alive_interval');
-      expect(SettingKeys.defaultPort, 'default_port');
-      expect(SettingKeys.defaultUsername, 'default_username');
       expect(SettingKeys.autoLockTimeout, 'auto_lock_timeout');
     });
   });
@@ -265,6 +259,56 @@ void main() {
     });
 
     group('confirmMuxWindowCloseNotifierProvider', () {
+      test('terminalNotifications ignores a stale startup read', () async {
+        container.dispose();
+        final delayedSettings = _DelayedBoolSettingsService(testDb);
+        container = ProviderContainer(
+          overrides: [
+            settingsServiceProvider.overrideWithValue(delayedSettings),
+          ],
+        );
+        final notifier = container.read(
+          terminalNotificationsNotifierProvider.notifier,
+        );
+
+        await notifier.setEnabled(enabled: false);
+        delayedSettings.loadedValue.complete(true);
+        await notifier.initializedValue();
+
+        expect(container.read(terminalNotificationsNotifierProvider), isFalse);
+        expect(
+          await SettingsService(
+            testDb,
+          ).getBool(SettingKeys.terminalNotifications, defaultValue: true),
+          isFalse,
+        );
+      });
+
+      test('shellCompletions ignores a stale startup read', () async {
+        container.dispose();
+        final delayedSettings = _DelayedBoolSettingsService(testDb);
+        container = ProviderContainer(
+          overrides: [
+            settingsServiceProvider.overrideWithValue(delayedSettings),
+          ],
+        );
+        final notifier = container.read(
+          shellCompletionsNotifierProvider.notifier,
+        );
+
+        await notifier.setEnabled(enabled: false);
+        delayedSettings.loadedValue.complete(true);
+        await notifier.initializedValue();
+
+        expect(container.read(shellCompletionsNotifierProvider), isFalse);
+        expect(
+          await SettingsService(
+            testDb,
+          ).getBool(SettingKeys.shellCompletions, defaultValue: true),
+          isFalse,
+        );
+      });
+
       test('a late startup read cannot overwrite a newer choice', () async {
         container.dispose();
         final delayedSettings = _DelayedBoolSettingsService(testDb);
@@ -311,18 +355,22 @@ void main() {
       });
     });
 
-    group('themeModeProvider', () {
+    group('themeModeNotifierProvider', () {
       test('returns system by default', () async {
-        final result = await container.read(themeModeProvider.future);
-        expect(result, 'system');
+        final result = await container
+            .read(themeModeNotifierProvider.notifier)
+            .initializedValue();
+        expect(result, ThemeMode.system);
       });
 
       test('returns stored value when set', () async {
         final settings = container.read(settingsServiceProvider);
         await settings.setString(SettingKeys.themeMode, 'dark');
-        container.invalidate(themeModeProvider);
-        final result = await container.read(themeModeProvider.future);
-        expect(result, 'dark');
+        container.invalidate(themeModeNotifierProvider);
+        final result = await container
+            .read(themeModeNotifierProvider.notifier)
+            .initializedValue();
+        expect(result, ThemeMode.dark);
       });
     });
 
@@ -382,39 +430,40 @@ void main() {
       });
     });
 
-    group('fontSizeProvider', () {
+    group('fontSizeNotifierProvider', () {
       test('returns 14.0 by default', () async {
-        final result = await container.read(fontSizeProvider.future);
+        final result = await container
+            .read(fontSizeNotifierProvider.notifier)
+            .initializedValue();
         expect(result, 14.0);
       });
     });
 
-    group('fontFamilyProvider', () {
+    group('fontFamilyNotifierProvider', () {
       test('returns monospace by default', () async {
-        final result = await container.read(fontFamilyProvider.future);
+        final result = await container
+            .read(fontFamilyNotifierProvider.notifier)
+            .initializedValue();
         expect(result, 'monospace');
       });
     });
 
-    group('hapticFeedbackProvider', () {
-      test('returns true by default', () async {
-        final result = await container.read(hapticFeedbackProvider.future);
-        expect(result, isTrue);
-      });
-    });
-
-    group('autoLockTimeoutProvider', () {
+    group('autoLockTimeoutNotifierProvider', () {
       test('returns 5 by default', () async {
-        final result = await container.read(autoLockTimeoutProvider.future);
+        final result = await container
+            .read(autoLockTimeoutNotifierProvider.notifier)
+            .initializedValue();
         expect(result, 5);
       });
 
       test('returns stored zero when auto-lock is disabled', () async {
         final settings = container.read(settingsServiceProvider);
         await settings.setInt(SettingKeys.autoLockTimeout, 0);
-        container.invalidate(autoLockTimeoutProvider);
+        container.invalidate(autoLockTimeoutNotifierProvider);
 
-        final result = await container.read(autoLockTimeoutProvider.future);
+        final result = await container
+            .read(autoLockTimeoutNotifierProvider.notifier)
+            .initializedValue();
 
         expect(result, 0);
       });
@@ -438,16 +487,20 @@ void main() {
       });
     });
 
-    group('cursorStyleProvider', () {
+    group('cursorStyleNotifierProvider', () {
       test('returns block by default', () async {
-        final result = await container.read(cursorStyleProvider.future);
+        final result = await container
+            .read(cursorStyleNotifierProvider.notifier)
+            .initializedValue();
         expect(result, 'block');
       });
     });
 
-    group('bellSoundProvider', () {
+    group('bellSoundNotifierProvider', () {
       test('returns true by default', () async {
-        final result = await container.read(bellSoundProvider.future);
+        final result = await container
+            .read(bellSoundNotifierProvider.notifier)
+            .initializedValue();
         expect(result, isTrue);
       });
     });

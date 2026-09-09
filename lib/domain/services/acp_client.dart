@@ -84,8 +84,6 @@ final class AcpClient {
   final Queue<AcpServerRequest> _pendingServerRequests =
       Queue<AcpServerRequest>();
   var _pendingServerRequestFlushScheduled = false;
-  final _otherNotifications =
-      StreamController<AcpJsonRpcNotification>.broadcast(sync: true);
   late final StreamSubscription<AcpJsonRpcNotification>
   _notificationSubscription;
   late final StreamSubscription<AcpJsonRpcServerRequest>
@@ -101,10 +99,6 @@ final class AcpClient {
 
   /// Typed incoming server requests.
   Stream<AcpServerRequest> get serverRequests => _serverRequests.stream;
-
-  /// Notifications not handled by the typed ACP layer.
-  Stream<AcpJsonRpcNotification> get otherNotifications =>
-      _otherNotifications.stream;
 
   /// Initializes the ACP connection.
   Future<AcpInitializeResult> initialize({
@@ -192,40 +186,6 @@ final class AcpClient {
       timeout: timeout,
     );
     return AcpSessionListResult.fromJson(_requireObject(result));
-  }
-
-  /// Lists pages until the cursor ends or [maxSessions] is reached.
-  Future<List<AcpSessionInfo>> listAllSessions({
-    String? cwd,
-    int? maxSessions,
-    Duration? timeout,
-  }) async {
-    if (maxSessions != null && maxSessions <= 0) {
-      return const <AcpSessionInfo>[];
-    }
-    final sessions = <AcpSessionInfo>[];
-    final seenCursors = <String>{};
-    String? cursor;
-    do {
-      final page = await listSessions(
-        cwd: cwd,
-        cursor: cursor,
-        timeout: timeout,
-      );
-      for (final session in page.sessions) {
-        sessions.add(session);
-        if (maxSessions != null && sessions.length >= maxSessions) {
-          return List<AcpSessionInfo>.unmodifiable(sessions);
-        }
-      }
-      cursor = page.nextCursor;
-      if (cursor != null && !seenCursors.add(cursor)) {
-        throw const AcpProtocolException(
-          'session/list returned a repeated cursor',
-        );
-      }
-    } while (cursor != null);
-    return List<AcpSessionInfo>.unmodifiable(sessions);
   }
 
   /// Loads a stored ACP session and requests history replay.
@@ -421,7 +381,6 @@ final class AcpClient {
     _pendingServerRequests.clear();
     await _updates.close();
     await _serverRequests.close();
-    await _otherNotifications.close();
   }
 
   Future<AcpSessionSetupResult> _sessionSetupRequest(
@@ -441,12 +400,10 @@ final class AcpClient {
 
   void _handleNotification(AcpJsonRpcNotification notification) {
     if (notification.method != 'session/update') {
-      _otherNotifications.add(notification);
       return;
     }
     final params = AcpJson.object(notification.params);
     if (params == null) {
-      _otherNotifications.add(notification);
       return;
     }
     _updates.add(AcpSessionNotification.fromJson(params));

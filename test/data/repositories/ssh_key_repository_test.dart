@@ -1,7 +1,5 @@
 // ignore_for_file: public_member_api_docs
 
-import 'dart:async';
-
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -10,31 +8,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 
-class _PausingSecretEncryptionService extends SecretEncryptionService {
-  _PausingSecretEncryptionService({required this.pausePlaintext})
-    : super.forTesting();
-
-  final String pausePlaintext;
-  final _paused = Completer<void>();
-  final _resume = Completer<void>();
-
-  Future<void> get paused => _paused.future;
-
-  void resume() {
-    if (!_resume.isCompleted) {
-      _resume.complete();
-    }
-  }
-
-  @override
-  Future<String?> encryptNullable(String? plaintext) async {
-    if (plaintext == pausePlaintext && !_paused.isCompleted) {
-      _paused.complete();
-      await _resume.future;
-    }
-    return super.encryptNullable(plaintext);
-  }
-}
+import '../../helpers/pausing_secret_encryption_service.dart';
 
 void main() {
   late AppDatabase db;
@@ -170,7 +144,7 @@ void main() {
     });
 
     test('legacy key migration does not overwrite newer writes', () async {
-      final encryptionService = _PausingSecretEncryptionService(
+      final encryptionService = PausingSecretEncryptionService(
         pausePlaintext: 'legacy-open-ssh-material...',
       );
       repository = KeyRepository(db, encryptionService);
@@ -230,67 +204,43 @@ void main() {
       expect(key, isNull);
     });
 
-    test('update modifies existing key', () async {
+    test('insert does not double-encrypt a pre-encrypted private key', () async {
+      const privateKey = 'fixture-open-ssh-material...';
       final id = await repository.insert(
         SshKeysCompanion.insert(
-          name: 'Original Key',
+          name: 'Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: 'fixture-open-ssh-material...',
+          privateKey: privateKey,
         ),
       );
 
-      final key = await repository.getById(id);
-      final success = await repository.update(
-        key!.copyWith(name: 'Updated Key'),
-      );
+      // Read the raw stored row (private key already encrypted by insert).
+      final rawKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(rawKey.privateKey, startsWith('ENCv1:'));
+      final storedEncryptedPrivKey = rawKey.privateKey;
 
-      expect(success, isTrue);
+      // Reinsert the encrypted row to verify that valid envelopes are preserved.
+      await repository.delete(id);
+      await repository.insert(rawKey.toCompanion(true));
 
-      final updated = await repository.getById(id);
-      expect(updated!.name, 'Updated Key');
+      final afterInsert = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(afterInsert.privateKey, startsWith('ENCv1:'));
+      expect(afterInsert.privateKey, isNot(contains('ENCv1:ENCv1:')));
+      // Service skips re-encrypting a valid envelope, so the stored bytes
+      // must be identical.
+      expect(afterInsert.privateKey, storedEncryptedPrivKey);
+
+      // Round-trip through the repository must still yield the original key.
+      final decrypted = await repository.getById(id);
+      expect(decrypted!.privateKey, privateKey);
     });
 
-    test(
-      'update does not double-encrypt a pre-encrypted private key',
-      () async {
-        const privateKey = 'fixture-open-ssh-material...';
-        final id = await repository.insert(
-          SshKeysCompanion.insert(
-            name: 'Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: privateKey,
-          ),
-        );
-
-        // Read the raw stored row (private key already encrypted by insert).
-        final rawKey = await (db.select(
-          db.sshKeys,
-        )..where((k) => k.id.equals(id))).getSingle();
-        expect(rawKey.privateKey, startsWith('ENCv1:'));
-        final storedEncryptedPrivKey = rawKey.privateKey;
-
-        // Call update with the already-encrypted state (bypassing getById
-        // decryption) to prove no double-encryption occurs.
-        await repository.update(rawKey.copyWith(name: 'Updated Key'));
-
-        final afterUpdate = await (db.select(
-          db.sshKeys,
-        )..where((k) => k.id.equals(id))).getSingle();
-        expect(afterUpdate.privateKey, startsWith('ENCv1:'));
-        expect(afterUpdate.privateKey, isNot(contains('ENCv1:ENCv1:')));
-        // Service skips re-encrypting a valid envelope, so the stored bytes
-        // must be identical.
-        expect(afterUpdate.privateKey, storedEncryptedPrivKey);
-
-        // Round-trip through the repository must still yield the original key.
-        final decrypted = await repository.getById(id);
-        expect(decrypted!.privateKey, privateKey);
-      },
-    );
-
-    test('update does not double-encrypt a pre-encrypted passphrase', () async {
+    test('insert does not double-encrypt a pre-encrypted passphrase', () async {
       const privateKey = 'fixture-open-ssh-material...';
       const passphrase = 'my-passphrase';
       final id = await repository.insert(
@@ -309,49 +259,19 @@ void main() {
       expect(rawKey.passphrase, startsWith('ENCv1:'));
       final storedEncryptedPassphrase = rawKey.passphrase;
 
-      await repository.update(rawKey.copyWith(name: 'Updated Key'));
+      await repository.delete(id);
+      await repository.insert(rawKey.toCompanion(true));
 
-      final afterUpdate = await (db.select(
+      final afterInsert = await (db.select(
         db.sshKeys,
       )..where((k) => k.id.equals(id))).getSingle();
-      expect(afterUpdate.passphrase, startsWith('ENCv1:'));
-      expect(afterUpdate.passphrase, isNot(contains('ENCv1:ENCv1:')));
-      expect(afterUpdate.passphrase, storedEncryptedPassphrase);
+      expect(afterInsert.passphrase, startsWith('ENCv1:'));
+      expect(afterInsert.passphrase, isNot(contains('ENCv1:ENCv1:')));
+      expect(afterInsert.passphrase, storedEncryptedPassphrase);
 
       final decrypted = await repository.getById(id);
       expect(decrypted!.passphrase, passphrase);
     });
-
-    test(
-      'repeated update cycles preserve private key decryptability',
-      () async {
-        const privateKey = 'fixture-open-ssh-material...';
-        final id = await repository.insert(
-          SshKeysCompanion.insert(
-            name: 'Original Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: privateKey,
-          ),
-        );
-
-        // Simulate multiple getById → update cycles (each decrypts then
-        // re-encrypts with a fresh nonce, but must never double-wrap).
-        for (var i = 0; i < 3; i++) {
-          final key = await repository.getById(id);
-          await repository.update(key!.copyWith(name: 'Key ${i + 1}'));
-        }
-
-        final rawKey = await (db.select(
-          db.sshKeys,
-        )..where((k) => k.id.equals(id))).getSingle();
-        expect(rawKey.privateKey, startsWith('ENCv1:'));
-        expect(rawKey.privateKey, isNot(contains('ENCv1:ENCv1:')));
-
-        final decrypted = await repository.getById(id);
-        expect(decrypted!.privateKey, privateKey);
-      },
-    );
 
     test('delete removes key', () async {
       final id = await repository.insert(
@@ -374,109 +294,6 @@ void main() {
       final deleted = await repository.delete(999);
       expect(deleted, 0);
     });
-
-    test('search finds keys by name', () async {
-      await repository.insert(
-        SshKeysCompanion.insert(
-          name: 'Production Key',
-          keyType: 'ed25519',
-          publicKey: 'ssh-ed25519 AAAA1...',
-          privateKey: 'fixture-open-ssh-material-1...',
-        ),
-      );
-      await repository.insert(
-        SshKeysCompanion.insert(
-          name: 'Development Key',
-          keyType: 'rsa',
-          publicKey: 'ssh-rsa AAAA2...',
-          privateKey: 'fixture-rsa-material-2...',
-        ),
-      );
-
-      final results = await repository.search('Production');
-      expect(results, hasLength(1));
-      expect(results.first.name, 'Production Key');
-    });
-
-    test('search returns empty when no match', () async {
-      await repository.insert(
-        SshKeysCompanion.insert(
-          name: 'Test Key',
-          keyType: 'ed25519',
-          publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: 'fixture-open-ssh-material...',
-        ),
-      );
-
-      final results = await repository.search('NonExistent');
-      expect(results, isEmpty);
-    });
-
-    test('search is case insensitive with LIKE', () async {
-      await repository.insert(
-        SshKeysCompanion.insert(
-          name: 'My Server Key',
-          keyType: 'ed25519',
-          publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: 'fixture-open-ssh-material...',
-        ),
-      );
-
-      final results = await repository.search('server');
-      expect(results, hasLength(1));
-    });
-
-    test(
-      'search treats percent as a literal character, not a wildcard',
-      () async {
-        await repository.insert(
-          SshKeysCompanion.insert(
-            name: '100% Production Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA1...',
-            privateKey: 'fixture-open-ssh-material-1...',
-          ),
-        );
-        await repository.insert(
-          SshKeysCompanion.insert(
-            name: 'Development Key',
-            keyType: 'rsa',
-            publicKey: 'ssh-rsa AAAA2...',
-            privateKey: 'fixture-rsa-material-2...',
-          ),
-        );
-
-        final results = await repository.search('%');
-        expect(results, hasLength(1));
-        expect(results.first.name, '100% Production Key');
-      },
-    );
-
-    test(
-      'search treats underscore as a literal character, not a wildcard',
-      () async {
-        await repository.insert(
-          SshKeysCompanion.insert(
-            name: 'deploy_key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA1...',
-            privateKey: 'fixture-open-ssh-material-1...',
-          ),
-        );
-        await repository.insert(
-          SshKeysCompanion.insert(
-            name: 'deploy key',
-            keyType: 'rsa',
-            publicKey: 'ssh-rsa AAAA2...',
-            privateKey: 'fixture-rsa-material-2...',
-          ),
-        );
-
-        final results = await repository.search('deploy_');
-        expect(results, hasLength(1));
-        expect(results.first.name, 'deploy_key');
-      },
-    );
 
     test('watchAll emits updates when keys change', () async {
       await repository.insert(
@@ -587,20 +404,6 @@ void main() {
 
       final keys = await repository.getAll();
       expect(keys, hasLength(3));
-    });
-
-    test('update returns false when key not exists', () async {
-      final fakeKey = SshKey(
-        id: 999,
-        name: 'Fake Key',
-        keyType: 'ed25519',
-        publicKey: 'ssh-ed25519 AAAA...',
-        privateKey: 'fixture-open-ssh-material...',
-        createdAt: DateTime.now(),
-      );
-
-      final success = await repository.update(fakeKey);
-      expect(success, isFalse);
     });
   });
 }

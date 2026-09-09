@@ -521,31 +521,6 @@ func readProcessTable() map[int]processInfo {
 	return processes
 }
 
-func commandNameForPID(pid int) string {
-	ctx, cancel := context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=", "-o", "args=").Output()
-	if err == nil && ctx.Err() == nil {
-		for _, line := range strings.Split(string(output), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 0 {
-				continue
-			}
-			if command := commandNameFromProcessFields(fields[0], strings.Join(fields[1:], " ")); command != "" {
-				return command
-			}
-		}
-	}
-
-	ctx, cancel = context.WithTimeout(context.Background(), processMetadataTimeout)
-	defer cancel()
-	output, err = exec.CommandContext(ctx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || ctx.Err() != nil {
-		return ""
-	}
-	return cleanProcessCommandName(string(output))
-}
-
 // detectSystemMemoryBytes returns total physical memory in bytes, or 0 when it
 // cannot be determined on this platform.
 func detectSystemMemoryBytes() uint64 {
@@ -605,9 +580,9 @@ func forwardResizeSignals(
 	initialHeight int,
 	explicitSize bool,
 ) func() {
-	_ = initialWidth
-	_ = initialHeight
-	_ = explicitSize
+	if explicitSize && initialWidth > 0 && initialHeight > 0 {
+		return func() {}
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGWINCH)
 	done := make(chan struct{})

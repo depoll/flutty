@@ -1,5 +1,52 @@
 part of '../screens/terminal_screen.dart';
 
+/// Whether a window snapshot changed terminal identity or theme context.
+@visibleForTesting
+bool shouldRefreshTmuxThemeAfterWindowChange(
+  List<TmuxWindow> previousWindows,
+  List<TmuxWindow> nextWindows,
+) {
+  if (previousWindows.length != nextWindows.length) {
+    return true;
+  }
+  final byId = <String, TmuxWindow>{};
+  final byIndex = <int, TmuxWindow>{};
+  for (final window in previousWindows) {
+    if (window.id case final id?) byId.putIfAbsent(id, () => window);
+    byIndex.putIfAbsent(window.index, () => window);
+  }
+  for (final nextWindow in nextWindows) {
+    final previousWindow = nextWindow.id == null
+        ? byIndex[nextWindow.index]
+        : byId[nextWindow.id];
+    if (previousWindow == null ||
+        _tmuxWindowRefreshIdentity(previousWindow) !=
+            _tmuxWindowRefreshIdentity(nextWindow)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+({
+  String? currentCommand,
+  AgentLaunchTool? foregroundAgentTool,
+  String? id,
+  int index,
+  bool isActive,
+  int? panePid,
+  String? paneStartCommand,
+})
+_tmuxWindowRefreshIdentity(TmuxWindow window) => (
+  currentCommand: window.currentCommand,
+  foregroundAgentTool: window.foregroundAgentTool,
+  id: window.id,
+  index: window.index,
+  isActive: window.isActive,
+  panePid: window.panePid,
+  paneStartCommand: window.paneStartCommand,
+);
+
 /// Builds the compact native-agent identity used by collapsed mux handles.
 ///
 /// The provider mark identifies the agent and the chat badge distinguishes a
@@ -524,7 +571,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           : applyTmuxWindowChangeEvent(currentWindows, event);
       final shouldNotifyWindowStateChanged =
           currentWindows == null ||
-          _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
+          shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
       final activeWindowChanged =
           currentWindows != null &&
           _didDisplayedTmuxWindowChange(currentWindows, windows);
@@ -548,7 +595,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
     final shouldNotifyWindowStateChanged =
-        _shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
+        shouldRefreshTmuxThemeAfterWindowChange(currentWindows, windows);
     final activeWindowChanged = _didDisplayedTmuxWindowChange(
       currentWindows,
       windows,
@@ -595,58 +642,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       panePid: activeWindow.panePid,
     );
   }
-
-  bool _shouldRefreshTmuxThemeAfterWindowChange(
-    List<TmuxWindow> previousWindows,
-    List<TmuxWindow> nextWindows,
-  ) {
-    if (previousWindows.length != nextWindows.length) {
-      return true;
-    }
-    for (final nextWindow in nextWindows) {
-      final previousWindow = previousWindows
-          .where(
-            (window) => _isSameTmuxWindowForThemeRefresh(window, nextWindow),
-          )
-          .firstOrNull;
-      if (previousWindow == null ||
-          _tmuxWindowRefreshIdentity(previousWindow) !=
-              _tmuxWindowRefreshIdentity(nextWindow)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool _isSameTmuxWindowForThemeRefresh(
-    TmuxWindow previousWindow,
-    TmuxWindow nextWindow,
-  ) {
-    final nextId = nextWindow.id;
-    if (nextId != null) {
-      return previousWindow.id == nextId;
-    }
-    return previousWindow.index == nextWindow.index;
-  }
-
-  ({
-    String? currentCommand,
-    AgentLaunchTool? foregroundAgentTool,
-    String? id,
-    int index,
-    bool isActive,
-    int? panePid,
-    String? paneStartCommand,
-  })
-  _tmuxWindowRefreshIdentity(TmuxWindow window) => (
-    currentCommand: window.currentCommand,
-    foregroundAgentTool: window.foregroundAgentTool,
-    id: window.id,
-    index: window.index,
-    isActive: window.isActive,
-    panePid: window.panePid,
-    paneStartCommand: window.paneStartCommand,
-  );
 
   void _applyWindows(List<TmuxWindow> windows) {
     final previousTerminalModeSignature = activeTmuxWindowTerminalModeSignature(
@@ -2068,71 +2063,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget _buildSessionProviderTile(
     ThemeData theme,
     AiSessionProviderEntry provider,
-  ) {
-    final titleColor = provider.hasFailure
+  ) => AiSessionProviderTile(
+    provider: provider,
+    onTap: () => unawaited(_showSessionPickerForTool(provider)),
+    visualDensity: _denseTileVisualDensity,
+    contentPadding: _groupTilePadding,
+    minLeadingWidth: 18,
+    iconSize: 16,
+    iconColor: provider.hasFailure
         ? theme.colorScheme.error
-        : provider.isSelectable
-        ? theme.colorScheme.onSurface
-        : theme.colorScheme.onSurfaceVariant;
-    final iconColor = provider.hasFailure
-        ? theme.colorScheme.error
-        : provider.isSelectable
-        ? theme.colorScheme.primary
-        : theme.colorScheme.onSurfaceVariant;
-
-    return ListTile(
-      dense: true,
-      visualDensity: _denseTileVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: _groupTilePadding,
-      horizontalTitleGap: 12,
-      minLeadingWidth: 18,
-      leading: AgentToolIcon(
-        toolName: provider.toolName,
-        size: 16,
-        color: iconColor,
-      ),
-      title: Text(
-        provider.toolName,
-        style: theme.textTheme.bodyMedium?.copyWith(color: titleColor),
-      ),
-      subtitle: Text(
-        provider.statusLabel,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: provider.hasFailure
-              ? theme.colorScheme.error
-              : theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-      trailing: provider.isLoading && !provider.hasSessions
-          ? const SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-            )
-          : Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (provider.isLoading) ...[
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 4),
-                ],
-                if (provider.isSelectable)
-                  Icon(
-                    Icons.chevron_right,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-              ],
-            ),
-      onTap: provider.isSelectable
-          ? () => unawaited(_showSessionPickerForTool(provider))
-          : null,
-    );
-  }
+        : theme.colorScheme.primary,
+  );
 
   Widget _buildCollapsedNativeAcpButton(
     ThemeData theme,

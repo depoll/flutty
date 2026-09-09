@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../domain/services/auth_service.dart';
 import '../database/database.dart';
 import '../security/secret_encryption_service.dart';
-import 'like_query.dart';
+import 'plaintext_cache.dart';
 
 enum _KeySecretColumn { privateKey, passphrase }
 
@@ -35,11 +35,7 @@ class KeyRepository {
 
   final AppDatabase _db;
   final SecretEncryptionService _secretEncryptionService;
-
-  static const _maxDecryptCacheEntries = 512;
-
-  // Ciphertext-keyed cache – see HostRepository._decryptCache for rationale.
-  final _decryptCache = <String, String>{};
+  late final _decryptCache = PlaintextCache(_secretEncryptionService);
 
   /// Clears cached decrypted secret plaintexts.
   void clearDecryptionCache() {
@@ -79,46 +75,10 @@ class KeyRepository {
     return _decryptKey(key);
   }
 
-  /// Search keys by name.
-  Future<List<SshKey>> search(String query) {
-    final escaped = escapeSqlLikeQuery(query);
-    return (_db.select(_db.sshKeys)..where(
-          (k) => k.name.like('%$escaped%', escapeChar: sqlLikeEscapeCharacter),
-        ))
-        .get()
-        .then((keys) async => (await _loadDecryptable(keys)).keys);
-  }
-
   /// Insert a new key.
   Future<int> insert(SshKeysCompanion key) async {
     final encryptedKey = await _encryptKeyCompanion(key);
     return _db.into(_db.sshKeys).insert(encryptedKey);
-  }
-
-  /// Update an existing key.
-  Future<bool> update(SshKey key) async {
-    final previousStoredSecrets = await _storedSecretsForKey(key.id);
-    final encryptedPrivateKey = await _secretEncryptionService.encryptRequired(
-      key.privateKey,
-    );
-    final encryptedPassphrase = await _secretEncryptionService.encryptNullable(
-      key.passphrase,
-    );
-    final updated = await _db
-        .update(_db.sshKeys)
-        .replace(
-          key.copyWith(
-            privateKey: encryptedPrivateKey,
-            passphrase: Value(encryptedPassphrase),
-          ),
-        );
-    if (updated) {
-      _evictDecrypted(previousStoredSecrets?.privateKey);
-      _evictDecrypted(previousStoredSecrets?.passphrase);
-      _rememberEncryptedPlaintext(encryptedPrivateKey, key.privateKey);
-      _rememberEncryptedPlaintext(encryptedPassphrase, key.passphrase);
-    }
-    return updated;
   }
 
   /// Delete a key.
@@ -128,20 +88,22 @@ class KeyRepository {
       _db.sshKeys,
     )..where((k) => k.id.equals(id))).go();
     if (deleted > 0) {
-      _evictDecrypted(previousStoredSecrets?.privateKey);
-      _evictDecrypted(previousStoredSecrets?.passphrase);
+      _decryptCache
+        ..remove(previousStoredSecrets?.privateKey)
+        ..remove(previousStoredSecrets?.passphrase);
     }
     return deleted;
   }
 
   Future<SshKeyLoadResult> _loadDecryptable(List<SshKey> keys) async {
+    final generation = _decryptCache.generation;
     final decryptedKeys = <SshKey>[];
     var unreadableCount = 0;
     String? firstUnreadableErrorType;
 
     for (final key in keys) {
       try {
-        decryptedKeys.add(await _decryptKey(key));
+        decryptedKeys.add(await _decryptKey(key, generation: generation));
       } on Exception catch (error) {
         unreadableCount++;
         firstUnreadableErrorType ??= error.runtimeType.toString();
@@ -155,12 +117,14 @@ class KeyRepository {
     );
   }
 
-  Future<SshKey> _decryptKey(SshKey key) async {
+  Future<SshKey> _decryptKey(SshKey key, {int? generation}) async {
+    generation ??= _decryptCache.generation;
     final decryptedPrivateKey =
         await _decryptOrMigrateKeySecret(
           key.id,
           key.privateKey,
           _KeySecretColumn.privateKey,
+          generation,
         ) ??
         '';
     final passphrase = key.passphrase;
@@ -169,6 +133,7 @@ class KeyRepository {
             key.id,
             passphrase,
             _KeySecretColumn.passphrase,
+            generation,
           )
         : await _secretEncryptionService.decryptNullable(passphrase);
 
@@ -178,30 +143,14 @@ class KeyRepository {
     );
   }
 
-  /// Returns the cached or freshly-decrypted form of [ciphertext].
-  Future<String?> _cachedDecrypt(String ciphertext) async {
-    final hit = _decryptCache.remove(ciphertext);
-    if (hit != null) {
-      _decryptCache[ciphertext] = hit;
-      return hit;
-    }
-
-    final plaintext = await _secretEncryptionService.decryptNullable(
-      ciphertext,
-    );
-    if (plaintext != null && plaintext.isNotEmpty) {
-      _rememberDecrypted(ciphertext, plaintext);
-    }
-    return plaintext;
-  }
-
   Future<String?> _decryptOrMigrateKeySecret(
     int keyId,
     String storedSecret,
     _KeySecretColumn column,
+    int generation,
   ) async {
     if (_secretEncryptionService.isValidEncryptedEnvelope(storedSecret)) {
-      return _cachedDecrypt(storedSecret);
+      return _decryptCache.decrypt(storedSecret, generation);
     }
 
     final encryptedSecret = await _secretEncryptionService.encryptNullable(
@@ -228,7 +177,7 @@ class KeyRepository {
               passphrase: Value(encryptedSecret),
             ),
           });
-      _rememberDecrypted(encryptedSecret, storedSecret);
+      _decryptCache.remember(encryptedSecret, storedSecret, generation);
     }
     return storedSecret;
   }
@@ -243,32 +192,6 @@ class KeyRepository {
       return null;
     }
     return (privateKey: row.privateKey, passphrase: row.passphrase);
-  }
-
-  void _rememberEncryptedPlaintext(String? ciphertext, String? plaintext) {
-    if (ciphertext == null ||
-        ciphertext.isEmpty ||
-        plaintext == null ||
-        plaintext.isEmpty ||
-        _secretEncryptionService.isEncryptedValue(plaintext)) {
-      return;
-    }
-    _rememberDecrypted(ciphertext, plaintext);
-  }
-
-  void _rememberDecrypted(String ciphertext, String plaintext) {
-    _decryptCache.remove(ciphertext);
-    _decryptCache[ciphertext] = plaintext;
-    while (_decryptCache.length > _maxDecryptCacheEntries) {
-      _decryptCache.remove(_decryptCache.keys.first);
-    }
-  }
-
-  void _evictDecrypted(String? ciphertext) {
-    if (ciphertext == null || ciphertext.isEmpty) {
-      return;
-    }
-    _decryptCache.remove(ciphertext);
   }
 
   Future<SshKeysCompanion> _encryptKeyCompanion(SshKeysCompanion key) async {

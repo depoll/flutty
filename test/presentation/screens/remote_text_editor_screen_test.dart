@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -156,160 +157,6 @@ void main() {
     });
   });
 
-  group('currentLinePrefixAtTextOffset', () {
-    test('returns empty string at offset 0', () {
-      expect(currentLinePrefixAtTextOffset('hello', 0), '');
-    });
-
-    test('returns characters up to offset on the first line', () {
-      expect(currentLinePrefixAtTextOffset('hello', 3), 'hel');
-    });
-
-    test('returns only the current-line prefix after a newline', () {
-      expect(currentLinePrefixAtTextOffset('abc\ndefg', 7), 'def');
-    });
-
-    test('clamps negative offset to empty prefix', () {
-      expect(currentLinePrefixAtTextOffset('hello', -5), '');
-    });
-
-    test('clamps offset beyond text length to full first-line prefix', () {
-      expect(currentLinePrefixAtTextOffset('hello', 999), 'hello');
-    });
-  });
-
-  group('measureUnwrappedEditorContentWidth', () {
-    double fakeLineWidth(String line, TextStyle style) => line.length * 10.0;
-
-    test('returns 0 for all-empty lines', () {
-      expect(
-        measureUnwrappedEditorContentWidth(
-          lines: const ['', '', ''],
-          style: const TextStyle(),
-          textDirection: TextDirection.ltr,
-          textScaler: TextScaler.noScaling,
-          measureLineWidth: fakeLineWidth,
-        ),
-        0.0,
-      );
-    });
-
-    test('returns max line width plus trailing slack', () {
-      // Default trailing slack is 24 px. 'abcd' = 4 × 10 = 40; 40 + 24 = 64.
-      final result = measureUnwrappedEditorContentWidth(
-        lines: const ['ab', 'abcd', 'abc'],
-        style: const TextStyle(),
-        textDirection: TextDirection.ltr,
-        textScaler: TextScaler.noScaling,
-        measureLineWidth: fakeLineWidth,
-      );
-      expect(result, closeTo(64.0, 0.001));
-    });
-
-    test('ignores empty lines when computing max width', () {
-      final result = measureUnwrappedEditorContentWidth(
-        lines: const ['', 'ab', ''],
-        style: const TextStyle(),
-        textDirection: TextDirection.ltr,
-        textScaler: TextScaler.noScaling,
-        trailingSlack: 0,
-        measureLineWidth: fakeLineWidth,
-      );
-      expect(result, closeTo(20.0, 0.001));
-    });
-  });
-
-  group('resolveUnwrappedEditorSelectionScrollOffset', () {
-    double fakeMeasure(String line, TextStyle style) => line.length * 10.0;
-
-    const style = TextStyle();
-
-    test('returns currentOffset when caret is already visible', () {
-      // Caret at offset 5 → prefix = 'hello' = 5 × 10 = 50 px.
-      // Viewport: [0, 200] — caret at 50 is well inside.
-      expect(
-        resolveUnwrappedEditorSelectionScrollOffset(
-          text: 'hello world',
-          selection: const TextSelection.collapsed(offset: 5),
-          style: style,
-          textDirection: TextDirection.ltr,
-          textScaler: TextScaler.noScaling,
-          viewportWidth: 200,
-          trailingSlack: 0,
-          measureLineWidth: fakeMeasure,
-        ),
-        0.0,
-      );
-    });
-
-    test('scrolls right when caret is beyond viewport end', () {
-      // Caret at offset 20 → prefix = 20 × 10 = 200 px.
-      // Viewport: [0, 100] — trailing edge 200 > 100.
-      final offset = resolveUnwrappedEditorSelectionScrollOffset(
-        text: 'a' * 30,
-        selection: const TextSelection.collapsed(offset: 20),
-        style: style,
-        textDirection: TextDirection.ltr,
-        textScaler: TextScaler.noScaling,
-        viewportWidth: 100,
-        trailingSlack: 0,
-        measureLineWidth: fakeMeasure,
-      );
-      expect(offset, greaterThan(0));
-    });
-
-    test('scrolls left when caret is before viewport start', () {
-      // Caret at 0 px, viewport starts at 100 → scroll back to 0.
-      expect(
-        resolveUnwrappedEditorSelectionScrollOffset(
-          text: 'hello world',
-          selection: const TextSelection.collapsed(offset: 0),
-          style: style,
-          textDirection: TextDirection.ltr,
-          textScaler: TextScaler.noScaling,
-          viewportWidth: 200,
-          currentOffset: 100,
-          trailingSlack: 0,
-          measureLineWidth: fakeMeasure,
-        ),
-        0.0,
-      );
-    });
-
-    test('returns currentOffset for invalid selection', () {
-      expect(
-        resolveUnwrappedEditorSelectionScrollOffset(
-          text: 'hello',
-          selection: const TextSelection.collapsed(offset: -1),
-          style: style,
-          textDirection: TextDirection.ltr,
-          textScaler: TextScaler.noScaling,
-          viewportWidth: 200,
-          currentOffset: 50,
-          trailingSlack: 0,
-          measureLineWidth: fakeMeasure,
-        ),
-        50.0,
-      );
-    });
-
-    test('returns currentOffset when viewportWidth is zero', () {
-      expect(
-        resolveUnwrappedEditorSelectionScrollOffset(
-          text: 'hello',
-          selection: const TextSelection.collapsed(offset: 3),
-          style: style,
-          textDirection: TextDirection.ltr,
-          textScaler: TextScaler.noScaling,
-          viewportWidth: 0,
-          trailingSlack: 0,
-          measureLineWidth: fakeMeasure,
-        ),
-        0.0,
-      );
-    });
-  });
-
   group('RemoteTextEditorScreen caret-X cache', () {
     Widget buildEditor({
       required TextEditingController controller,
@@ -321,6 +168,40 @@ void main() {
         horizontalScrollController: horizontalScrollController,
       ),
     );
+
+    testWidgets('disposes measurement painters on replacement and teardown', (
+      tester,
+    ) async {
+      final painters = <TextPainter>[];
+      void onAllocation(ObjectEvent event) {
+        if (event is ObjectCreated && event.object is TextPainter) {
+          painters.add(event.object as TextPainter);
+        }
+      }
+
+      FlutterMemoryAllocations.instance.addListener(onAllocation);
+      addTearDown(
+        () => FlutterMemoryAllocations.instance.removeListener(onAllocation),
+      );
+      final first = TextEditingController(text: 'first line');
+      final second = TextEditingController(text: 'replacement controller');
+      addTearDown(first.dispose);
+      addTearDown(second.dispose);
+
+      await tester.pumpWidget(buildEditor(controller: first));
+      await tester.pumpAndSettle();
+      // Text changes replace the cached content painter.
+      first.text = 'a longer line with a different measured width';
+      await tester.pumpAndSettle();
+      // A controller change clears the cache before measuring again.
+      await tester.pumpWidget(buildEditor(controller: second));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+
+      expect(painters, isNotEmpty);
+      expect(painters.where((painter) => !painter.debugDisposed), isEmpty);
+    });
 
     testWidgets('populates caretX cache after first frame', (tester) async {
       final controller = TextEditingController(text: 'hello world')

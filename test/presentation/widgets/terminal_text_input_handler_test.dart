@@ -6,51 +6,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../helpers/terminal_input_helpers.dart';
+
 const _deleteDetectionMarker = '\u200B\u200B';
-
-({String text, int cursorOffset}) _terminalStateFromEvents(
-  Iterable<String> events, {
-  required String initialText,
-  required int initialCursorOffset,
-}) {
-  final visibleCharacters = initialText.characters.toList(growable: true);
-  var cursorOffset = initialCursorOffset;
-
-  for (final event in events) {
-    var offset = 0;
-    while (offset < event.length) {
-      if (event.startsWith('\u001b[D', offset)) {
-        if (cursorOffset > 0) {
-          cursorOffset--;
-        }
-        offset += 3;
-        continue;
-      }
-      if (event.startsWith('\u001b[C', offset)) {
-        if (cursorOffset < visibleCharacters.length) {
-          cursorOffset++;
-        }
-        offset += 3;
-        continue;
-      }
-
-      final character = event.substring(offset).characters.first;
-      offset += character.length;
-      if (character == '\x7f') {
-        if (cursorOffset > 0) {
-          visibleCharacters.removeAt(cursorOffset - 1);
-          cursorOffset--;
-        }
-        continue;
-      }
-
-      visibleCharacters.insert(cursorOffset, character);
-      cursorOffset++;
-    }
-  }
-
-  return (text: visibleCharacters.join(), cursorOffset: cursorOffset);
-}
 
 void main() {
   group('TerminalTextInputHandler', () {
@@ -156,7 +114,7 @@ void main() {
       await tester.pump();
 
       expect(
-        _terminalStateFromEvents(
+        terminalStateFromEvents(
           terminalOutput,
           initialText: 'hello world',
           initialCursorOffset: 'hello world'.length,
@@ -235,7 +193,7 @@ void main() {
         await tester.pump();
 
         expect(
-          _terminalStateFromEvents(
+          terminalStateFromEvents(
             terminalOutput,
             initialText: 'hello world',
             initialCursorOffset: 'hello world'.length,
@@ -312,7 +270,7 @@ void main() {
 
         expect(terminalOutput, ['\x7f']);
         expect(
-          _terminalStateFromEvents(
+          terminalStateFromEvents(
             terminalOutput,
             initialText: 'hello world',
             initialCursorOffset: 'hello '.length,
@@ -376,7 +334,7 @@ void main() {
 
         expect(terminalOutput, ['\x7f', '\x7f']);
         expect(
-          _terminalStateFromEvents(
+          terminalStateFromEvents(
             terminalOutput,
             initialText: 'nano',
             initialCursorOffset: 'nano'.length,

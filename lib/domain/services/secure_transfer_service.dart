@@ -455,49 +455,11 @@ class SecureTransferService {
       }
 
       final hostId = await _hostRepository.insert(
-        HostsCompanion.insert(
-          label: _requiredString(hostData, 'label'),
-          hostname: _requiredString(hostData, 'hostname'),
-          port: Value(_optionalInt(hostData['port']) ?? 22),
-          username: _requiredString(hostData, 'username'),
-          password: Value(_optionalString(hostData['password'])),
-          keyId: Value(keyId),
-          groupId: const Value(null),
-          jumpHostId: const Value(null),
-          skipJumpHostOnSsids: Value(
-            _optionalString(hostData['skipJumpHostOnSsids']),
-          ),
-          isFavorite: Value((hostData['isFavorite'] as bool?) ?? false),
-          color: Value(_optionalString(hostData['color'])),
-          notes: Value(_optionalString(hostData['notes'])),
-          tags: Value(_optionalString(hostData['tags'])),
-          createdAt: Value(
-            _optionalDateTime(hostData['createdAt']) ?? DateTime.now(),
-          ),
-          updatedAt: Value(
-            _optionalDateTime(hostData['updatedAt']) ?? DateTime.now(),
-          ),
-          lastConnectedAt: Value(
-            _optionalDateTime(hostData['lastConnectedAt']),
-          ),
-          terminalThemeLightId: Value(
-            _optionalString(hostData['terminalThemeLightId']),
-          ),
-          terminalThemeDarkId: Value(
-            _optionalString(hostData['terminalThemeDarkId']),
-          ),
-          terminalFontFamily: Value(
-            _optionalString(hostData['terminalFontFamily']),
-          ),
-          autoConnectCommand: Value(autoConnectCommand),
-          autoConnectSnippetId: const Value(null),
-          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
-          autoForwardPorts: Value(
-            (hostData['autoForwardPorts'] as bool?) ?? false,
-          ),
-          portProxyName: Value(
-            _importedPortProxyName(hostData['portProxyName']),
-          ),
+        _importedHostCompanion(
+          hostData,
+          keyId: keyId,
+          autoConnectCommand: autoConnectCommand,
+          requiresAutoConnectReview: requiresAutoConnectReview,
         ),
       );
       final rawCliLaunchPreferences = payload.data['hostCliLaunchPreferences'];
@@ -885,11 +847,33 @@ class SecureTransferService {
     }
   }
 
-  Future<Map<int, int>> _importGroups(
-    List<Map<String, dynamic>> rawGroups,
-  ) async {
+  Future<Map<int, int>> _importGroups(List<Map<String, dynamic>> rawGroups) =>
+      _importHierarchy(
+        rawGroups,
+        errorMessage: 'Invalid group hierarchy in migration payload',
+        insert: (item, parentId) => _db
+            .into(_db.groups)
+            .insert(
+              GroupsCompanion.insert(
+                name: _requiredString(item, 'name'),
+                parentId: Value(parentId),
+                sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
+                color: Value(_optionalString(item['color'])),
+                icon: Value(_optionalString(item['icon'])),
+                createdAt: Value(
+                  _optionalDateTime(item['createdAt']) ?? DateTime.now(),
+                ),
+              ),
+            ),
+      );
+
+  Future<Map<int, int>> _importHierarchy(
+    List<Map<String, dynamic>> items, {
+    required Future<int> Function(Map<String, dynamic>, int?) insert,
+    required String errorMessage,
+  }) async {
     final pending = <int, Map<String, dynamic>>{};
-    for (final item in rawGroups) {
+    for (final item in items) {
       final oldId = _optionalInt(item['id']);
       if (oldId != null) {
         pending[oldId] = item;
@@ -910,31 +894,17 @@ class SecureTransferService {
           continue;
         }
 
-        final newId = await _db
-            .into(_db.groups)
-            .insert(
-              GroupsCompanion.insert(
-                name: _requiredString(item, 'name'),
-                parentId: Value(
-                  parentOldId == null ? null : idMapping[parentOldId],
-                ),
-                sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
-                color: Value(_optionalString(item['color'])),
-                icon: Value(_optionalString(item['icon'])),
-                createdAt: Value(
-                  _optionalDateTime(item['createdAt']) ?? DateTime.now(),
-                ),
-              ),
-            );
+        final newId = await insert(
+          item,
+          parentOldId == null ? null : idMapping[parentOldId],
+        );
         idMapping[oldId] = newId;
         pending.remove(oldId);
         progress = true;
       }
 
       if (!progress) {
-        throw const FormatException(
-          'Invalid group hierarchy in migration payload',
-        );
+        throw FormatException(errorMessage);
       }
     }
 
@@ -956,6 +926,45 @@ class SecureTransferService {
     }
     return idMapping;
   }
+
+  HostsCompanion _importedHostCompanion(
+    Map<String, dynamic> item, {
+    required String? autoConnectCommand,
+    required bool requiresAutoConnectReview,
+    int? keyId,
+    int? groupId,
+    int? snippetId,
+    Value<int> sortOrder = const Value.absent(),
+  }) => HostsCompanion.insert(
+    label: _requiredString(item, 'label'),
+    hostname: _requiredString(item, 'hostname'),
+    port: Value(_optionalInt(item['port']) ?? 22),
+    username: _requiredString(item, 'username'),
+    password: Value(_optionalString(item['password'])),
+    keyId: Value(keyId),
+    groupId: Value(groupId),
+    jumpHostId: const Value(null),
+    skipJumpHostOnSsids: Value(_optionalString(item['skipJumpHostOnSsids'])),
+    isFavorite: Value((item['isFavorite'] as bool?) ?? false),
+    color: Value(_optionalString(item['color'])),
+    notes: Value(_optionalString(item['notes'])),
+    tags: Value(_optionalString(item['tags'])),
+    createdAt: Value(_optionalDateTime(item['createdAt']) ?? DateTime.now()),
+    updatedAt: Value(_optionalDateTime(item['updatedAt']) ?? DateTime.now()),
+    lastConnectedAt: Value(_optionalDateTime(item['lastConnectedAt'])),
+    terminalThemeLightId: Value(_optionalString(item['terminalThemeLightId'])),
+    terminalThemeDarkId: Value(_optionalString(item['terminalThemeDarkId'])),
+    terminalFontFamily: Value(_optionalString(item['terminalFontFamily'])),
+    tmuxSessionName: Value(_optionalString(item['tmuxSessionName'])),
+    tmuxWorkingDirectory: Value(_optionalString(item['tmuxWorkingDirectory'])),
+    remoteMuxBackend: Value(_optionalString(item['remoteMuxBackend'])),
+    autoConnectCommand: Value(autoConnectCommand),
+    autoConnectSnippetId: Value(snippetId),
+    autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+    autoForwardPorts: Value((item['autoForwardPorts'] as bool?) ?? false),
+    portProxyName: Value(_importedPortProxyName(item['portProxyName'])),
+    sortOrder: sortOrder,
+  );
 
   Future<Map<int, int>> _importHosts(
     List<Map<String, dynamic>> rawHosts, {
@@ -1010,43 +1019,13 @@ class SecureTransferService {
       );
 
       final newId = await _hostRepository.insert(
-        HostsCompanion.insert(
-          label: _requiredString(item, 'label'),
-          hostname: _requiredString(item, 'hostname'),
-          port: Value(_optionalInt(item['port']) ?? 22),
-          username: _requiredString(item, 'username'),
-          password: Value(_optionalString(item['password'])),
-          keyId: Value(mappedKeyId),
-          groupId: Value(mappedGroupId),
-          jumpHostId: const Value(null),
-          skipJumpHostOnSsids: Value(
-            _optionalString(item['skipJumpHostOnSsids']),
-          ),
-          isFavorite: Value((item['isFavorite'] as bool?) ?? false),
-          color: Value(_optionalString(item['color'])),
-          notes: Value(_optionalString(item['notes'])),
-          tags: Value(_optionalString(item['tags'])),
-          createdAt: Value(
-            _optionalDateTime(item['createdAt']) ?? DateTime.now(),
-          ),
-          updatedAt: Value(
-            _optionalDateTime(item['updatedAt']) ?? DateTime.now(),
-          ),
-          lastConnectedAt: Value(_optionalDateTime(item['lastConnectedAt'])),
-          terminalThemeLightId: Value(
-            _optionalString(item['terminalThemeLightId']),
-          ),
-          terminalThemeDarkId: Value(
-            _optionalString(item['terminalThemeDarkId']),
-          ),
-          terminalFontFamily: Value(
-            _optionalString(item['terminalFontFamily']),
-          ),
-          autoConnectCommand: Value(autoConnectCommand),
-          autoConnectSnippetId: Value(mappedSnippetId),
-          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
-          autoForwardPorts: Value((item['autoForwardPorts'] as bool?) ?? false),
-          portProxyName: Value(_importedPortProxyName(item['portProxyName'])),
+        _importedHostCompanion(
+          item,
+          keyId: mappedKeyId,
+          groupId: mappedGroupId,
+          snippetId: mappedSnippetId,
+          autoConnectCommand: autoConnectCommand,
+          requiresAutoConnectReview: requiresAutoConnectReview,
           sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
         ),
       );
@@ -1084,57 +1063,22 @@ class SecureTransferService {
 
   Future<Map<int, int>> _importSnippetFolders(
     List<Map<String, dynamic>> rawFolders,
-  ) async {
-    final pending = <int, Map<String, dynamic>>{};
-    for (final item in rawFolders) {
-      final oldId = _optionalInt(item['id']);
-      if (oldId != null) {
-        pending[oldId] = item;
-      }
-    }
-
-    final idMapping = <int, int>{};
-    while (pending.isNotEmpty) {
-      var progress = false;
-      final pendingIds = pending.keys.toList(growable: false);
-      for (final oldId in pendingIds) {
-        final item = pending[oldId];
-        if (item == null) {
-          continue;
-        }
-        final parentOldId = _optionalInt(item['parentId']);
-        if (parentOldId != null && !idMapping.containsKey(parentOldId)) {
-          continue;
-        }
-
-        final newId = await _db
-            .into(_db.snippetFolders)
-            .insert(
-              SnippetFoldersCompanion.insert(
-                name: _requiredString(item, 'name'),
-                parentId: Value(
-                  parentOldId == null ? null : idMapping[parentOldId],
-                ),
-                sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
-                createdAt: Value(
-                  _optionalDateTime(item['createdAt']) ?? DateTime.now(),
-                ),
-              ),
-            );
-        idMapping[oldId] = newId;
-        pending.remove(oldId);
-        progress = true;
-      }
-
-      if (!progress) {
-        throw const FormatException(
-          'Invalid snippet folder hierarchy in migration payload',
-        );
-      }
-    }
-
-    return idMapping;
-  }
+  ) => _importHierarchy(
+    rawFolders,
+    errorMessage: 'Invalid snippet folder hierarchy in migration payload',
+    insert: (item, parentId) => _db
+        .into(_db.snippetFolders)
+        .insert(
+          SnippetFoldersCompanion.insert(
+            name: _requiredString(item, 'name'),
+            parentId: Value(parentId),
+            sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
+            createdAt: Value(
+              _optionalDateTime(item['createdAt']) ?? DateTime.now(),
+            ),
+          ),
+        ),
+  );
 
   Future<Map<int, int>> _importSnippets(
     List<Map<String, dynamic>> rawSnippets, {

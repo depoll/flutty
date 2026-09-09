@@ -8,6 +8,7 @@ import '../models/terminal_backend.dart';
 import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'monkeymux_service.dart';
+import 'remote_file_service.dart' show shellEscapePosix;
 import 'remote_multiplexer_service.dart';
 import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
@@ -420,7 +421,5 @@ String _wrapClientCommandWorkingDirectory(String command, String? directory) {
   if (cwd == null) {
     return command;
   }
-  return 'cd ${_shellQuote(cwd)} && ( $command )';
+  return 'cd ${shellEscapePosix(cwd)} && ( $command )';
 }
-
-String _shellQuote(String value) => "'${value.replaceAll("'", "'\"'\"'")}'";

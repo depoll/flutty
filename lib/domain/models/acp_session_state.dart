@@ -102,9 +102,6 @@ enum AcpSessionErrorKind {
   /// A request exceeded its deadline.
   timeout,
 
-  /// The free concurrency limit blocked the requested transition.
-  concurrencyBlocked,
-
   /// An otherwise uncategorized failure.
   unknown,
 }

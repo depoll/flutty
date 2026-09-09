@@ -12,7 +12,6 @@ import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/models/app_platform_file.dart';
-import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
 
 const _proMonetizationState = MonetizationState(
@@ -767,31 +766,6 @@ void main() {
       expect(
         resolveSftpFileTapIntent(isDirectory: false, filename: 'notes.txt'),
         SftpFileTapIntent.edit,
-      );
-    });
-
-    test('measures the widest rendered line instead of the longest string', () {
-      const style = TextStyle(fontSize: 20);
-      const trailingSlack = 12.0;
-      const textDirection = TextDirection.ltr;
-      const textScaler = TextScaler.noScaling;
-      const narrowerButLonger = 'iiiiiiiiii';
-      const widerButShorter = 'WWWW';
-      final widths = <String, double>{
-        narrowerButLonger: 80,
-        widerButShorter: 200,
-      };
-
-      expect(
-        measureUnwrappedEditorContentWidth(
-          lines: const [narrowerButLonger, widerButShorter],
-          style: style,
-          textDirection: textDirection,
-          textScaler: textScaler,
-          trailingSlack: trailingSlack,
-          measureLineWidth: (line, _) => widths[line]!,
-        ),
-        closeTo(widths[widerButShorter]! + trailingSlack, 0.001),
       );
     });
 

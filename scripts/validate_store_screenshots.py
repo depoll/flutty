@@ -6,9 +6,9 @@ import argparse
 import platform
 import re
 import shutil
-import subprocess
-import tempfile
 from pathlib import Path
+
+import store_media
 
 from PIL import Image
 
@@ -156,59 +156,7 @@ def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
             'Run this validator on a macOS runner before syncing metadata.',
         )
 
-    swift_source = r'''
-import Foundation
-import Vision
-import AppKit
-
-let listPath = CommandLine.arguments[1]
-let contents = try String(contentsOfFile: listPath, encoding: .utf8)
-let urls = contents.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
-let request = VNRecognizeTextRequest()
-request.recognitionLevel = .accurate
-request.usesLanguageCorrection = false
-request.recognitionLanguages = ["en-US"]
-
-for url in urls {
-    guard let image = NSImage(contentsOf: url),
-          let tiff = image.tiffRepresentation,
-          let bitmap = NSBitmapImageRep(data: tiff),
-          let cgImage = bitmap.cgImage else {
-        print("FILE\t\(url.path)\tERROR\tCould not load image")
-        continue
-    }
-    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-    try handler.perform([request])
-    let text = (request.results ?? [])
-        .compactMap { $0.topCandidates(1).first?.string }
-        .joined(separator: " ")
-        .replacingOccurrences(of: "\n", with: " ")
-    print("FILE\t\(url.path)")
-    print(text)
-    print("END_FILE")
-}
-'''
-    with tempfile.NamedTemporaryFile('w', suffix='.swift') as script:
-        with tempfile.NamedTemporaryFile('w') as file_list:
-            script.write(swift_source)
-            script.flush()
-            file_list.write('\n'.join(str(path) for path in paths))
-            file_list.flush()
-            result = subprocess.run(
-                ['swift', script.name, file_list.name],
-                check=True,
-                stdout=subprocess.PIPE,
-                text=True,
-            )
-
-    texts: dict[Path, str] = {}
-    for block in result.stdout.split('END_FILE'):
-        lines = [line for line in block.strip().splitlines() if line]
-        if not lines or not lines[0].startswith('FILE\t'):
-            continue
-        path = Path(lines[0].split('\t', 1)[1])
-        texts[path] = ' '.join(lines[1:])
-    return texts
+    return store_media._ocr_texts(paths)
 
 
 def _validate_ocr_content(paths: list[Path]) -> None:
